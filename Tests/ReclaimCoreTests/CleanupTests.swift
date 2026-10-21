@@ -252,9 +252,13 @@ private actor LaunchRunner: CommandRunning {
 }
 
 private func legacyData() throws -> Data {
-    try PropertyListSerialization.data(fromPropertyList: [
+    // Foundation may retain /private/var when the Chrome root does not exist
+    // (for example on a clean CI runner). Never add /private a second time.
+    let root = BrowserService().cloneRoot.path
+    let legacyRoot = root.hasPrefix("/var/") ? "/private" + root : root
+    return try PropertyListSerialization.data(fromPropertyList: [
         "Label": ScheduleManager.legacyLabel, "StartInterval": 3600, "RunAtLoad": true,
-        "ProgramArguments": ["/usr/bin/find", "/private" + BrowserService().cloneRoot.path, "-mindepth", "1", "-maxdepth", "1", "-mmin", "+720", "-exec", "rm", "-rf", "{}", "+"]
+        "ProgramArguments": ["/usr/bin/find", legacyRoot, "-mindepth", "1", "-maxdepth", "1", "-mmin", "+720", "-exec", "rm", "-rf", "{}", "+"]
     ], format: .xml, options: 0)
 }
 
