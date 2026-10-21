@@ -1,0 +1,106 @@
+name: Build and release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: public-release
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.MACOS_RUNNER || 'xcode-27' }}
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release credentials
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in CERTIFICATE_P12 CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing Actions secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Check version is unpublished
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(cat VERSION)"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$RUNNER_TEMP/reclaim-releases.txt"
+          if grep -Fxq "v$VERSION" "$RUNNER_TEMP/reclaim-releases.txt"; then
+            echo 'Release already exists; increment VERSION.' >&2
+            exit 1
+          fi
+          existing_tag="$(git ls-remote --tags origin "refs/tags/v$VERSION")"
+          if [[ -n "$existing_tag" ]]; then
+            echo 'Version tag already exists; increment VERSION.' >&2
+            exit 1
+          fi
+      - run: swift test
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: ./scripts/import-signing-certificate.sh
+      - name: Build, sign and notarize universal app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/package.sh
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
+      - name: Save notarization reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarization-reports
+          path: dist/notary-*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: |
+            dist/Reclaim.dmg
+            dist/Reclaim.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release
+          path: artifacts
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          (cd artifacts && sha256sum --check SHA256SUMS.txt)
+          gh release create "v$RELEASE_VERSION" --draft --target "$GITHUB_SHA" \
+            --title "Reclaim $RELEASE_VERSION" --notes-file RELEASE_NOTES.md \
+            artifacts/Reclaim.dmg artifacts/Reclaim.zip artifacts/SHA256SUMS.txt
+          gh release edit "v$RELEASE_VERSION" --draft=false --latest

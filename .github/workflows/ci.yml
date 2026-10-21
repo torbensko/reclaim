@@ -1,0 +1,27 @@
+name: Test and package
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ vars.MACOS_RUNNER || 'xcode-27' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+      - name: Build universal preview
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/package.sh --unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-preview
+          path: |
+            dist/Reclaim-unsigned.dmg
+            dist/Reclaim-unsigned.zip
+            dist/SHA256SUMS-unsigned.txt
+          if-no-files-found: error
