@@ -3,6 +3,8 @@
 A native SwiftUI utility for freeing space held by known developer storage
 sources: local Time Machine snapshots, Xcode build data, Docker and Chrome.
 
+![Reclaim overview showing free SSD space and local Time Machine, Xcode, Docker and browser storage](docs/images/reclaim-overview.jpg)
+
 ## Motivation
 
 **Finder can show 100+ GB available while a build tool sees only about 5 GB
