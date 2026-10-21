@@ -39,12 +39,12 @@ Successful releases contain:
 - `Reclaim.zip`: the same signed and stapled app.
 - `SHA256SUMS.txt`: checksums for both archives.
 
-The stable DMG URL will be
+The stable DMG URL is
 `https://github.com/torbensko/reclaim/releases/latest/download/Reclaim.dmg`.
-After the first release succeeds, add that URL as `downloadUrl` in the website's
-`torbensko-site/src/content/projects/reclaim.md` and update its availability copy.
-Until then, the page links to source and explains that the signed download is
-being prepared; it must not claim an unsigned preview is a notarized release.
+The README and website's `torbensko-site/src/content/projects/reclaim.md` use this
+URL, so subsequent releases need no link changes. Enable public download links
+only after the signed assets are verified; never present an unsigned preview as
+a notarized release.
 
 ## Validation and subsequent versions
 

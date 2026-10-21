@@ -21,6 +21,17 @@ a large footprint can have no cleanup candidates.
 The [product brief](docs/PRODUCT.md) records this motivation, scope and design
 choices. [Development instructions](AGENTS.md) preserve them for future work.
 
+## Download
+
+[Download Reclaim for macOS](https://github.com/torbensko/reclaim/releases/latest/download/Reclaim.dmg),
+open the DMG, and drag Reclaim into Applications. The release is Developer ID
+signed and notarized by Apple. The [latest release](https://github.com/torbensko/reclaim/releases/latest)
+also includes a ZIP and SHA-256 checksums.
+
+Requires macOS 14 or later on Apple Silicon or Intel. Hands-on testing has been
+on Apple Silicon with macOS 27; older systems and Intel Macs have not yet had
+the same testing.
+
 ## Build and run
 
 Runs on macOS 14 or later. Build with Xcode 27 or later (or its Command Line
