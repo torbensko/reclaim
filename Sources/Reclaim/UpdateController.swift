@@ -65,19 +65,13 @@ struct UpdatePolicy {
     }
 
     func check() {
-        guard !store.isBusy else { return }
         controller?.checkForUpdates(nil)
     }
 
     func setAutomaticChecks(_ enabled: Bool) { controller?.updater.automaticallyChecksForUpdates = enabled }
 
-    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
-        guard !store.isBusy else {
-            throw NSError(domain: "Reclaim.Updates", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Wait for the current storage operation to finish, then check for updates again."])
-        }
-    }
-
+    // Checks are read-only and may run during the initial inventory scan. Gating
+    // them on isBusy would suppress automatic checks on short app sessions.
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         relaunchGate.postponeIfBusy(installHandler)
@@ -86,13 +80,12 @@ struct UpdatePolicy {
 
 struct UpdateCommands: Commands {
     @ObservedObject var updates: UpdateController
-    @ObservedObject var store: ReclaimStore
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
             if updates.enabled {
                 Button("Check for Updates…") { updates.check() }
-                    .disabled(!updates.canCheck || store.isBusy)
+                    .disabled(!updates.canCheck)
                 Toggle("Automatically Check for Updates", isOn: Binding(
                     get: { updates.automaticChecks }, set: { updates.setAutomaticChecks($0) }))
             } else {

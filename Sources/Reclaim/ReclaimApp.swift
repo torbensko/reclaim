@@ -33,7 +33,7 @@ struct ReclaimApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About \(BuildInformation.current.name)") { BuildInformation.current.showAboutPanel() }
             }
-            UpdateCommands(updates: updates, store: store)
+            UpdateCommands(updates: updates)
             CommandGroup(after: .newItem) {
                 Button("Refresh Storage") { Task { await store.refresh() } }
                     .keyboardShortcut("r")
