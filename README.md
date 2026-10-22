@@ -35,13 +35,39 @@ the same testing.
 ## Build and run
 
 Runs on macOS 14 or later. Build with Xcode 27 or later (or its Command Line
-Tools and macOS SDK) and Swift 6. No third-party dependencies.
+Tools and macOS SDK) and Swift 6. Swift Package Manager fetches the pinned Sparkle
+dependency used for production updates.
 
 ```sh
 swift test
 ./scripts/build-app.sh
-open dist/Reclaim.app
+open "dist/Reclaim Dev.app"
 ```
+
+Keep the published **Reclaim** in `/Applications`, and test **Reclaim Dev** from
+the project's `dist` folder. Development builds have a separate bundle identity,
+never check for updates, and never overwrite the installed production app.
+Their app menu includes **Open Reclaim in Applications** to switch back easily.
+The app name, About panel and information panel identify the version, build
+channel, build number, source revision, build time and running location.
+
+Production releases use Sparkle for automatic update checks and **Reclaim →
+Check for Updates…**. Automatic checks can be turned off in that menu. Installing
+an update requires the user's choice by default; a requested restart waits for
+current storage work to finish. Updates use the same signed, notarized ZIP as the
+website download. Existing versions without Sparkle need one manual installation
+of the first updater-enabled release. Local development work is not automatically
+published or offered as an update.
+
+For manual installation, drag the downloaded app into Applications. The optional
+`./scripts/install-app.sh --from /path/to/Reclaim.app --open` verifies a signed
+release and backs up the previous app under
+`~/Library/Application Support/Reclaim/App Backups`. It never builds source or
+installs development builds. `--built` accepts an already signed and notarized
+release in `dist/Reclaim.app`. Installation does not change cleanup schedules;
+the stable scheduled helper is updated when the user next saves their schedule.
+Development and production inspect the same real storage and share the existing
+cleanup lock and schedule; development is not an isolated disk-data sandbox.
 
 Open `Package.swift` in Xcode to develop. `--demo` shows sample snapshot/storage
 figures with mutation disabled. The generated app is signed locally. The manual
@@ -52,8 +78,9 @@ GitHub release workflow builds, signs and notarizes the distribution; see
 `Resources/Reclaim.png` is the approved purple mark on a pale lilac background,
 without a label. It is preserved unchanged as the artwork master. Packaging
 exports the standard macOS icon sizes into `Reclaim.icns`; the website uses the
-same artwork. `VERSION` is the release version; `BUILD_NUMBER` supplies a numeric
-build number (GitHub's run number for CI, otherwise the local development value).
+same artwork. `VERSION` is the next release version; `BUILD_NUMBER` supplies the
+numeric build number (the release workflow's increasing run number). Local builds
+increment an ignored counter in `dist`; their numbers are separate from releases.
 
 ## Interface
 
@@ -63,6 +90,32 @@ Time Machine, Xcode, Docker and browser data. There is no navigation sidebar.
 estimate for important usage and includes potentially reclaimable data. It may
 differ from Finder. Shared blocks mean the source sizes cannot be added together
 as a promise of recovered space.
+
+Each source page leads with its reclaimable-space figure, with SSD free space
+alongside it. Docker shows its own estimate for all unused images (including
+those Reclaim keeps), or inspection-only build cache. Xcode and Browser show
+private bytes in items safe to clean; shared blocks can free additional space.
+Unknown measurements stay blank, including Time Machine snapshot sizes. These
+source totals are independent of table filters and selection.
+
+After any cleanup outcome, Reclaim refreshes every source and independently
+measures SSD free/available space immediately and repeatedly over about a minute.
+The header names unfinished scans and shows when free space was last checked.
+The result reports the observed change, which can include other disk activity;
+it does not claim that all of the change came from cleanup. Purge controls stay
+disabled while the full inventory refresh is running, with the reason in help.
+
+All discovered items are shown by default. **Safe to clean** items always come
+first, followed by dimmed rows under **Protected**. The optional
+**Safe only** filter hides that lower group. Found/safe counts remain
+visible, and filtered empty states explain what was found and let you show it.
+Text search also matches source paths and cleanup reasons. The Xcode table shows
+the source workspace cross-checked against repositories and registered worktrees;
+right-click to reveal it in Finder. A project match explains ownership protection,
+not necessarily active use. **Select all** selects the rows shown by the current
+filters. Mixed selections remove only safe items after confirmation; protected
+items remain inspectable. “Safe” means the current checks passed, and those checks
+run again before removal.
 
 The unified toolbar uses native Liquid Glass action groups and a centered AppKit
 segmented source control, following Activity Monitor. AppKit sizes the tab
@@ -75,7 +128,7 @@ current control styling.
 | --- | --- | --- |
 | Time Machine | Internal Data volume only; ask macOS to thin by a GB target or delete selected restore points | Manual only; requires system authorization |
 | Xcode | Build and Index folders from verified orphaned DerivedData projects only | Sources gone, no registered worktree, inactive for 7 days, no build tools or file users |
-| Docker | Relay engine usage and unique/shared sizes; remove only untagged images older than 24 hours with zero container references and no reported active builder | None; build cache is inspection-only |
+| Docker | Relay engine usage and unique/shared sizes; remove unused tagged or untagged images older than 24 hours with zero container references and no reported active builder | None; build cache is inspection-only |
 | Chrome | Temporary signing copies; standard Cache/Code Cache folders are inspection-only | Signing copies older than 24 hours with no matching process or file users |
 
 Browser caches are inspection-only. Chrome signing copies come from the current
@@ -99,11 +152,20 @@ files also prevent cleanup. Ownership and usage are checked again before removal
 Docker commands explicitly target the local Unix socket at
 `~/.docker/run/docker.sock`. Remote contexts are not used. Containers and volumes
 are never deleted. As in Docker Desktop, an image is unused only when no running
-**or stopped** container references it. Reclaim additionally protects all tagged
-images and recent images. Docker's normal refusal checks remain enabled; removal
-is never forced. Build cache is kept even when the engine reports it unused,
-because that does not establish that its project is inactive. Docker's virtual
-disk can return host space after a delay.
+**or stopped** container references it. Unused tagged images are available for
+manual cleanup after 24 hours, just like untagged images; a tag alone does not
+mean an image is in use. Images appear once per ID with their tags and creation
+age, even when Docker Desktop lists several aliases. The footer relays Docker's
+reclaimable estimate for the whole image store, which can include newer images
+that Reclaim keeps. It is not a selected-row total or guaranteed SSD recovery.
+
+Removal includes all local tags of the selected image. Reclaim rechecks usage and
+references before each step and stops on changed mappings, new users or an engine
+refusal. It never forces removal or prunes unselected parents. Multiple tags are
+removed in steps, so concurrent Docker changes can cause a partial operation;
+the app refreshes the list afterward. Locally built images may need rebuilding.
+Build cache remains inspect-only because unused cache does not establish project
+inactivity. Docker's virtual disk can return host space after a delay.
 
 ### Shared blocks and snapshot sizes
 

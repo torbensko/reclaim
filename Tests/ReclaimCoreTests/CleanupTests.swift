@@ -33,6 +33,26 @@ private actor Runner: CommandRunning {
 }
 private func response(_ text: String = "", code: Int32 = 0) -> CommandResult { CommandResult(output: Data(text.utf8), exitCode: code) }
 
+@Test func applicablePrivateSizeExcludesKeptDataAndPreservesUnknownMeasurements() {
+    func entry(_ id: String, privateBytes: Int64?, eligibility: CleanupEligibility) -> LocalEntry {
+        LocalEntry(id: id, name: id, path: "/fixture/\(id)", bytes: 1_000_000,
+                   modified: .distantPast, kind: .chromeClone, eligibility: eligibility, privateBytes: privateBytes)
+    }
+    let first = entry("first", privateBytes: 100, eligibility: .candidate)
+    let second = entry("second", privateBytes: 200, eligibility: .candidate)
+    let kept = entry("kept", privateBytes: 50_000, eligibility: .protected("In use"))
+    let unmeasuredKept = entry("unmeasured-kept", privateBytes: nil, eligibility: .unknown("Usage unknown"))
+    let report = LocalReport(entries: [first, second, kept, unmeasuredKept], notice: nil)
+    #expect(report.applicablePrivateBytes == 300)
+    #expect(report.privateBytes == nil)
+    let unmeasured = entry("unmeasured", privateBytes: nil, eligibility: .candidate)
+    #expect(LocalReport(entries: [first, unmeasured], notice: nil).applicablePrivateBytes == nil)
+    let shared = entry("shared", privateBytes: 0, eligibility: .candidate)
+    #expect(LocalReport(entries: [shared], notice: nil).applicablePrivateBytes == 0)
+    #expect(LocalReport(entries: [kept, unmeasuredKept], notice: nil).applicablePrivateBytes == 0)
+    #expect(LocalReport(entries: [], notice: nil).applicablePrivateBytes == 0)
+}
+
 @Test func dockerSizesUseUnitsAndRejectMalformedValues() throws {
     #expect(try DockerService.parseSize("3.937GB") == 3_937_000_000)
     #expect(try DockerService.parseSize("32B") == 32)
@@ -53,6 +73,20 @@ private func dockerDetail(containers: Int = 0, tagged: Bool = false) -> String {
     """
 }
 
+private func dockerReferences(tags: [String] = [], digests: [String] = [], id: String = imageID) -> CommandResult {
+    let data = try! JSONSerialization.data(withJSONObject: ["ID": id, "RepoTags": tags, "RepoDigests": digests])
+    return CommandResult(output: data, exitCode: 0)
+}
+
+private func dockerLoad(containers: Int = 0, tags: [String] = [], digests: [String] = []) -> [CommandResult] {
+    [response(dockerSummary), response(dockerDetail(containers: containers, tagged: !tags.isEmpty)),
+     dockerReferences(tags: tags, digests: digests)]
+}
+
+private var emptyDockerLoad: [CommandResult] {
+    [response(dockerSummary), response(#"{"Images":[],"BuildCache":[]}"#)]
+}
+
 @Test func dockerCacheCannotBePrunedAndCommandsStayLocal() async throws {
     let runner = Runner([])
     let service = DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner)
@@ -66,15 +100,17 @@ private func dockerDetail(containers: Int = 0, tagged: Bool = false) -> String {
 
 @Test func dockerUsedImageIsRejectedAndUnusedRemovalNeverForced() async throws {
     for count in [0, 1] {
-        let runner = Runner([response(dockerSummary), response(dockerDetail(containers: count)), response()])
+        let runner = Runner(dockerLoad(containers: count) + dockerLoad(containers: count) + [response()] + emptyDockerLoad)
         let service = DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner)
         if count == 0 {
             _ = try await service.removeImages(ids: [imageID])
-            #expect(await runner.commands.last?.arguments.suffix(3) == ["image", "rm", imageID])
-            #expect(await runner.commands.last?.arguments.contains("--force") == false)
+            let removals = await runner.commands.filter { $0.arguments.contains("rm") }
+            #expect(removals.count == 1)
+            #expect(removals.first?.arguments.suffix(5) == ["image", "rm", "--no-prune", "--", imageID])
+            #expect(removals.first?.arguments.contains("--force") == false)
         } else {
             await #expect(throws: (any Error).self) { try await service.removeImages(ids: [imageID]) }
-            #expect(await runner.commands.count == 2)
+            #expect(await runner.commands.count == 3)
         }
     }
     let runner = Runner([])
@@ -394,17 +430,18 @@ private func legacyData() throws -> Data {
     }
 }
 
-@Test func dockerKeepsTaggedRecentAndBuilderReferencedImagesAndReportsLayerSizes() throws {
+@Test func dockerAllowsOldUnusedTaggedImagesButKeepsRecentAndBuilderReferencedImages() throws {
     let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
     for tagged in [false, true] {
         let report = try DockerService.parse(summary: Data(dockerSummary.utf8), detail: Data(dockerDetail(tagged: tagged).utf8), now: fixedNow)
         let item = try #require(report.items.first)
         #expect(!item.inUse) // Same no-container definition as Docker Desktop, independent of cleanup policy.
-        #expect(item.eligibility.canClean == !tagged)
+        #expect(item.eligibility.canClean)
         #expect(item.uniqueBytes == 1_000_000_000)
         #expect(item.sharedBytes == 3_000_000_000)
         #expect(report.imageBytes == 4_000_000_000)
         #expect(report.cacheBytes == 3_000_000_000)
+        #expect(report.reclaimableImageBytes == 2_000_000_000)
     }
     var object = try #require(JSONSerialization.jsonObject(with: Data(dockerDetail().utf8)) as? [String: Any])
     var images = try #require(object["Images"] as? [[String: Any]])
@@ -412,7 +449,7 @@ private func legacyData() throws -> Data {
     images.append(tagged); object["Images"] = images
     var report = try DockerService.parse(summary: Data(dockerSummary.utf8), detail: JSONSerialization.data(withJSONObject: object), now: fixedNow)
     #expect(report.items.count == 1)
-    #expect(report.candidateCount == 0)
+    #expect(report.candidateCount == 1)
     object["Images"] = [images[0]]
     object["BuildCache"] = [["ID": "building", "Size": "1GB", "InUse": "true"]]
     report = try DockerService.parse(summary: Data(dockerSummary.utf8), detail: JSONSerialization.data(withJSONObject: object), now: fixedNow)
@@ -424,6 +461,76 @@ private func legacyData() throws -> Data {
     report = try DockerService.parse(summary: Data(dockerSummary.utf8), detail: JSONSerialization.data(withJSONObject: object), now: try #require(DockerService.parseDate("2026-01-01 12:00:00 +0000 UTC")))
     #expect(report.candidateCount == 0)
     #expect(report.items.first(where: { $0.kind == .buildCache })?.eligibility == .protected("Project ownership unknown"))
+}
+
+@Test func dockerEnumeratesAllAliasesButCountsEachImageOnce() async throws {
+    let tags = ["registry.example/project:old", "cdkasset-old:latest"]
+    let runner = Runner(dockerLoad(tags: tags))
+    let report = try await DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner).load()
+    #expect(report.items.count == 1)
+    #expect(report.candidateCount == 1)
+    #expect(report.items[0].references.tags == tags.sorted())
+    #expect(report.items[0].name.contains("cdkasset-old:latest"))
+    #expect(report.items[0].bytes == 4_000_000_000)
+    #expect(report.imageBytes == 4_000_000_000)
+    #expect(await runner.commands.last?.arguments.contains("inspect") == true)
+}
+
+@Test func dockerRemovesVerifiedAliasesThenTheImageWithoutForceOrParentPruning() async throws {
+    let tags = ["a:old", "b:old"]
+    let digests = ["a@" + imageID, "b@" + imageID]
+    let initial = dockerLoad(tags: tags, digests: digests)
+    let runner = Runner(initial + initial + [dockerReferences(tags: tags, digests: digests), response("Untagged: a:old")]
+                        + dockerLoad(tags: ["b:old"], digests: ["b@" + imageID]) + [response("Deleted: " + imageID)] + emptyDockerLoad)
+    let service = DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner)
+    _ = try await service.removeImages(ids: [imageID, imageID])
+    let removals = await runner.commands.filter { $0.arguments.contains("rm") }
+    #expect(removals.map { $0.arguments.last! } == ["a:old", imageID])
+    #expect(removals.allSatisfy { $0.arguments.contains("--no-prune") && !$0.arguments.contains("--force") && !$0.arguments.contains("-f") })
+}
+
+@Test func dockerStopsForNewUsersNewTagsRetaggingAndFailedChecks() async throws {
+    let tags = ["a:old", "b:old"]
+    for mode in 0...3 {
+        var sequence = dockerLoad(tags: tags)
+        switch mode {
+        case 0: sequence += dockerLoad(containers: 1, tags: tags)
+        case 1: sequence += dockerLoad(tags: tags + ["new:latest"])
+        case 2: sequence += dockerLoad(tags: tags) + [dockerReferences(tags: ["a:old"], id: "sha256:" + String(repeating: "b", count: 64))]
+        default: sequence += [response("Docker unavailable", code: 1)]
+        }
+        let runner = Runner(sequence)
+        let service = DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner)
+        await #expect(throws: (any Error).self) { try await service.removeImages(ids: [imageID]) }
+        #expect(await runner.commands.allSatisfy { !$0.arguments.contains("rm") })
+    }
+}
+
+@Test func dockerStopsAfterPartialUntaggingIfAContainerStartsOrAnEngineConflictOccurs() async throws {
+    let tags = ["a:old", "b:old"]
+    let initial = dockerLoad(tags: tags)
+    for conflict in [false, true] {
+        let sequence = initial + initial + [dockerReferences(tags: tags), response("untag result", code: conflict ? 1 : 0)]
+            + (conflict ? [] : dockerLoad(containers: 1, tags: ["b:old"]))
+        let runner = Runner(sequence)
+        let service = DockerService(executable: "/fixture/docker", socket: "/fixture/docker.sock", runner: runner)
+        await #expect(throws: (any Error).self) { try await service.removeImages(ids: [imageID]) }
+        #expect(await runner.commands.filter { $0.arguments.contains("rm") }.count == 1)
+        #expect(await runner.commands.allSatisfy { !$0.arguments.contains("--force") })
+    }
+}
+
+@Test func dockerReferenceInspectionRejectsMissingMalformedAndFlagShapedValues() throws {
+    for value in ["--force", "repo:tag\n", "repo:tag;anything", "", "repo:tag with spaces"] {
+        #expect(!DockerService.validImageReference(value))
+        #expect(throws: (any Error).self) { try DockerService.parseReferences(dockerReferences(tags: [value]).output) }
+    }
+    for value in ["registry.example:5000/project/image:old", "image:latest", "registry/project@" + imageID] {
+        #expect(DockerService.validImageReference(value))
+    }
+    #expect(throws: (any Error).self) { try DockerService.parseReferences(Data(#"{"ID":"invalid","RepoTags":[],"RepoDigests":[]}"#.utf8)) }
+    #expect(throws: (any Error).self) { try DockerService.parseReferences(Data("{}".utf8)) }
+    #expect(throws: (any Error).self) { try DockerService.parseReferences(Data()) }
 }
 
 @Test func repositoryInspectionProtectsRegisteredExternalAndMissingWorktrees() async throws {

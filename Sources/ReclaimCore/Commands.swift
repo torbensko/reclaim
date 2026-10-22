@@ -67,11 +67,11 @@ public enum SnapshotCommands {
     public static let localVolume = "/System/Volumes/Data"
     public static let list = Command(
         executable: "/usr/sbin/diskutil",
-        arguments: ["apfs", "listSnapshots", localVolume, "-plist"]
+        arguments: ["apfs", "listSnapshots", localVolume, "-plist"], timeoutSeconds: 30
     )
     public static let storage = Command(
         executable: "/usr/sbin/diskutil",
-        arguments: ["info", "-plist", localVolume]
+        arguments: ["info", "-plist", localVolume], timeoutSeconds: 30
     )
 
     public static func commands(for action: SnapshotAction) throws -> [Command] {

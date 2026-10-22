@@ -11,10 +11,12 @@ if [[ "$mode" == release ]]; then
     [[ "$SIGNING_IDENTITY" == 'Developer ID Application:'* ]] || { echo 'A Developer ID Application certificate is required.' >&2; exit 1; }
     export DISTRIBUTION=1
 else
-    export SIGNING_IDENTITY=- DISTRIBUTION=0
+    export SIGNING_IDENTITY=- DISTRIBUTION=0 RECLAIM_PREVIEW=1
 fi
 ./scripts/build-app.sh --universal
-app="$PWD/dist/Reclaim.app"
+app_name=Reclaim
+if [[ "$mode" == --unsigned ]]; then app_name='Reclaim Dev'; fi
+app="$PWD/dist/$app_name.app"
 for binary in "$app/Contents/MacOS/Reclaim" "$app/Contents/Helpers/ReclaimWorker"; do
     for architecture in arm64 x86_64; do
         lipo "$binary" -verify_arch "$architecture"
@@ -43,7 +45,7 @@ if [[ "$mode" == release ]]; then
     spctl --assess --type execute --verbose "$app"
 fi
 mkdir -p "$stage/image"
-ditto "$app" "$stage/image/Reclaim.app"
+ditto "$app" "$stage/image/$app_name.app"
 ln -s /Applications "$stage/image/Applications"
 cp README.md "$stage/image/README.md"
 dmg="$PWD/dist/Reclaim${suffix}.dmg"

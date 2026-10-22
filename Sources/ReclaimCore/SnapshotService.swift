@@ -84,6 +84,15 @@ public struct SnapshotService: Sendable {
         )
     }
 
+    /// A fresh, inexpensive reading independent of snapshot and cache inventories.
+    public func storage() async throws -> StorageInfo {
+        let result = try await runner.run(SnapshotCommands.storage).checked()
+        try StorageInfo.validateLocalVolume(result.output)
+        let (storage, _) = await loadStorage(from: result.output)
+        guard let storage else { throw SnapshotError.unrecognizedOutput }
+        return storage
+    }
+
     public func perform(_ action: SnapshotAction) async throws -> String {
         // Validate before querying the OS, then recheck that selected names still exist.
         let script = try SnapshotCommands.authorizationScript(for: action)

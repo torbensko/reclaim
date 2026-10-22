@@ -22,7 +22,7 @@ struct ContentView: View {
     @State private var amount = 25
     @State private var urgent = false
     @State private var dockerKind = DockerItem.Kind.image
-    @State private var candidatesOnly = true
+    @State private var safeOnly = false
     @State private var showSnapshotSizes = false
 
     var body: some View {
@@ -36,7 +36,7 @@ struct ContentView: View {
             }
             Divider()
             footer
-            if let message = store.errorMessage ?? store.resultMessage {
+            if let message = store.resultMessage ?? store.errorMessage {
                 HStack(spacing: 8) {
                     Image(systemName: store.errorMessage == nil ? "info.circle" : "exclamationmark.triangle")
                     Text(message).lineLimit(2).textSelection(.enabled)
@@ -62,7 +62,8 @@ struct ContentView: View {
         }
         .onChange(of: store.source) { _, _ in store.selection = []; search = "" }
         .onChange(of: dockerKind) { _, _ in store.selection = [] }
-        .onChange(of: candidatesOnly) { _, _ in store.selection = [] }
+        .onChange(of: safeOnly) { _, _ in store.selection = [] }
+        .onChange(of: search) { _, _ in store.selection = [] }
         .sheet(item: $action) { pending in
             VStack(alignment: .leading, spacing: 18) {
                 Text(pending.title).font(.title3.bold())
@@ -104,23 +105,88 @@ struct ContentView: View {
 
     private var storageHeader: some View {
         HStack(alignment: .center, spacing: 24) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(store.report?.storage.map { formatBytes($0.freeBytes) } ?? "—")
-                        .font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("free now").font(.callout).foregroundStyle(.secondary)
-                }
-                Text(store.report?.storage?.availableBytes.map { "\(formatBytes($0)) available including reclaimable space" } ?? "Reading internal SSD storage")
-                    .font(.caption).foregroundStyle(.secondary)
+            if store.source == .overview {
+                headline(freeSpace, label: "free now", detail: availableSpace)
+            } else {
+                reclaimableHeadline
             }
             Spacer()
-            if store.isBusy {
-                ProgressView().controlSize(.small)
-                Text(store.busyMessage ?? "").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Label("Internal SSD", systemImage: "internaldrive").font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 4) {
+                if store.source != .overview {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(freeSpace).font(.title3.weight(.semibold)).monospacedDigit()
+                        Text("free on Internal SSD").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text(availableSpace).font(.caption).foregroundStyle(.secondary)
+                }
+                if store.isBusy {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(store.busyMessage ?? "").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if store.source == .overview {
+                    Label("Internal SSD", systemImage: "internaldrive").font(.callout).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    if store.monitoringStorage && !store.isBusy { ProgressView().controlSize(.mini) }
+                    Text(store.storageStatus).font(.caption).foregroundStyle(.secondary)
+                }.help(store.storageError ?? "Free space is measured independently of the source inventories. After cleanup, readings repeat for about a minute to catch delayed release.")
             }
         }.padding(.horizontal, 20).padding(.vertical, 16)
+    }
+
+    private var freeSpace: String { store.storage.map { formatBytes($0.freeBytes) } ?? "—" }
+    private var availableSpace: String {
+        store.storage?.availableBytes.map { "\(formatBytes($0)) available including reclaimable space" } ?? "SSD available-space estimate unavailable"
+    }
+
+    private func headline(_ value: String, label: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(value).font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit().fixedSize()
+                Text(label).font(.callout).foregroundStyle(.secondary)
+            }
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }.accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var reclaimableHeadline: some View {
+        if store.loading.contains(store.source) {
+            headline("—", label: "reclaimable", detail: "Measuring \(store.source.rawValue)…")
+        } else if store.errors[store.source] != nil {
+            headline("—", label: "reclaimable", detail: "\(store.source.rawValue) unavailable")
+        } else {
+            switch store.source {
+            case .overview:
+                EmptyView()
+            case .timeMachine:
+                headline(store.report != nil && store.snapshots.isEmpty ? formatBytes(0) : "—",
+                         label: "reclaimable",
+                         detail: store.report == nil ? "Snapshot data unavailable" : store.snapshots.isEmpty ? "No local snapshots" : "\(store.snapshots.count) local snapshots · size unavailable in Reclaim")
+                    .help("This reader does not report snapshot sizes. The SSD's available-space estimate is not a snapshot measurement. Use Snapshot sizes below for Disk Utility's measurements.")
+            case .xcode, .browser:
+                let report = store.source == .xcode ? store.xcode : store.browser
+                let bytes = report?.applicablePrivateBytes
+                headline(bytes.map(formatBytes) ?? "—", label: "reclaimable · private bytes",
+                         detail: report.map { value in
+                             if value.candidateCount == 0 { return "None safe to clean · \(value.entries.count) found" }
+                             return "\(value.candidateCount) safe to clean · " + (bytes == nil ? "private size unavailable" : "shared blocks may free more")
+                         } ?? "Source data unavailable")
+                    .help("Private file bytes across all items safe to clean, independent of selection and filters. Protected items are excluded. " + privateSizeExplanation)
+            case .docker:
+                let report = store.docker
+                if dockerKind == .image {
+                    let kept = report?.items.filter { $0.kind == .image && !$0.inUse && !$0.eligibility.canClean }.count ?? 0
+                    headline(report?.reclaimableImageBytes.map(formatBytes) ?? "—", label: "potentially reclaimable",
+                             detail: report?.reclaimableImageBytes == nil ? "Docker's reclaimable estimate unavailable" : kept > 0 ? "Docker estimate · all unused images (\(kept) kept)" : "Docker estimate · all unused images")
+                        .help("Docker's whole-image-store reclaimable estimate, independent of selection and filters. It includes unused images held by Reclaim's age or builder checks. It is not a total for safe-to-clean items or a promise of SSD recovery. Shared layer sizes must not be summed.")
+                } else {
+                    headline(report.map { formatBytes($0.reclaimableCacheBytes) } ?? "—", label: "potentially reclaimable",
+                             detail: "Docker estimate · build cache is inspection-only")
+                        .help("Docker reports unused cache, but Reclaim cannot verify project ownership and does not remove it. Let your build tools manage cleanup. Image and cache totals can overlap.")
+                }
+            }
+        }
     }
 
     @ViewBuilder private var sourceContent: some View {
@@ -135,9 +201,9 @@ struct ContentView: View {
     private var rows: [SummaryRow] {
         [
             SummaryRow(source: .timeMachine, detail: "\(store.snapshots.count) local restore points", size: "Unavailable here", status: "Manual · restore history"),
-            SummaryRow(source: .xcode, detail: "\(store.xcode?.entries.count ?? 0) projects · build & index", size: store.xcode.map { formatBytes($0.bytes) } ?? "—", status: store.xcode.map { "\($0.candidateCount) candidates · \($0.entries.count - $0.candidateCount) kept" } ?? "—", privateSize: store.xcode?.privateBytes.map(formatBytes) ?? "—"),
-            SummaryRow(source: .docker, detail: "Images / build cache", size: store.docker.map { "\(formatBytes($0.imageBytes)) / \(formatBytes($0.cacheBytes))" } ?? "—", status: store.docker.map { "\($0.candidateCount) candidates · cache kept" } ?? "—"),
-            SummaryRow(source: .browser, detail: "Chrome signing copies & caches", size: store.browser.map { formatBytes($0.bytes) } ?? "—", status: store.browser.map { "\($0.candidateCount) candidates · \($0.entries.count - $0.candidateCount) kept" } ?? "—", privateSize: store.browser?.privateBytes.map(formatBytes) ?? "—")
+            SummaryRow(source: .xcode, detail: "\(store.xcode?.entries.count ?? 0) projects · build & index", size: store.xcode.map { formatBytes($0.bytes) } ?? "—", status: store.xcode.map { "\($0.candidateCount) safe · \($0.entries.count - $0.candidateCount) protected" } ?? "—", privateSize: store.xcode?.privateBytes.map(formatBytes) ?? "—"),
+            SummaryRow(source: .docker, detail: "Images / build cache", size: store.docker.map { "\(formatBytes($0.imageBytes)) / \(formatBytes($0.cacheBytes))" } ?? "—", status: store.docker.map { "\($0.candidateCount) safe · cache protected" } ?? "—"),
+            SummaryRow(source: .browser, detail: "Chrome signing copies & caches", size: store.browser.map { formatBytes($0.bytes) } ?? "—", status: store.browser.map { "\($0.candidateCount) safe · \($0.entries.count - $0.candidateCount) protected" } ?? "—", privateSize: store.browser?.privateBytes.map(formatBytes) ?? "—")
         ]
     }
 
@@ -196,57 +262,95 @@ struct ContentView: View {
                 Toggle("Urgent", isOn: $urgent).toggleStyle(.checkbox)
                 Button("Reclaim \(amount) GB…") { action = .snapshot(.reclaim(gigabytes: amount, urgency: urgent ? 4 : 1)) }
                     .buttonStyle(.borderedProminent).disabled(!store.canAct || store.snapshots.isEmpty)
+                    .help(store.actionBlockReason ?? (store.snapshots.isEmpty ? "No local snapshots to reclaim." : "Ask macOS to release space from local snapshots. No row selection is required."))
                 Text("macOS chooses which local restore points to remove.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
             }.padding(18).frame(width: 210)
         }
     }
 
-    private func tableHeading(_ title: String, count: Int) -> some View {
+    private var eligibilityFilter: some View {
+        Toggle("Safe only", isOn: $safeOnly).toggleStyle(.checkbox)
+            .help("Show only items that pass the current safety checks. Turn off to also see protected items and why they are kept.")
+    }
+
+    private func cleanupColor(_ eligible: Bool) -> Color {
+        eligible ? .primary : .secondary
+    }
+
+    private func tableHeading(_ title: String, count: Int, eligible: Int? = nil) -> some View {
         HStack {
             Text(title).font(.headline)
-            Text("\(count)").foregroundStyle(.tertiary)
+            Text(eligible.map { "\(count) found · \($0) safe" } ?? "\(count)").foregroundStyle(.secondary)
             Spacer()
-            if store.source == .xcode || store.source == .browser {
-                Toggle("Candidates only", isOn: $candidatesOnly).toggleStyle(.checkbox)
-            }
+            if eligible != nil { eligibilityFilter }
             searchField
         }.padding(.horizontal, 18).padding(.vertical, 10)
     }
 
-    private var visibleLocal: [LocalEntry] {
-        store.localEntries.filter { (!candidatesOnly || $0.eligible) && matches($0.name + " " + $0.path + " " + ($0.ownerPath ?? "")) }
+    private var matchingLocal: [LocalEntry] {
+        store.localEntries.filter {
+            matches($0.name + " " + $0.path + " " + ($0.ownerPath ?? "") + " " + $0.eligibility.explanation)
+        }.sorted {
+            if $0.bytes != $1.bytes { return $0.bytes > $1.bytes }
+            return $0.id < $1.id
+        }
     }
     private var localTable: some View {
         VStack(spacing: 0) {
-            tableHeading(store.source == .xcode ? "Build & index data" : "Chrome data", count: store.localEntries.count)
-            Table(visibleLocal, selection: $store.selection) {
+            tableHeading(store.source == .xcode ? "Build & index data" : "Chrome data", count: store.localEntries.count,
+                         eligible: store.localEntries.filter(\.eligible).count)
+            Table(of: LocalEntry.self, selection: $store.selection) {
                 TableColumn("Name") { item in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1)
                         Text(URL(fileURLWithPath: item.path).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }.padding(.vertical, 3).help([item.path, item.ownerPath].compactMap { $0 }.joined(separator: "\nSource: "))
-                }.width(min: 220, ideal: 340)
-                TableColumn("Kind") { Text($0.kind.rawValue).foregroundStyle(.secondary) }.width(120)
-                TableColumn("File blocks") { Text(formatBytes($0.bytes)).monospacedDigit().help("Allocated file blocks; APFS clones may share them with other rows. Not uniquely recoverable space.") }.width(110)
-                TableColumn("Private bytes²") { Text($0.privateBytes.map(formatBytes) ?? "—").monospacedDigit().help(privateSizeExplanation) }.width(100)
-                TableColumn("Last activity") { Text($0.modified.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary) }.width(min: 160, ideal: 170)
+                    }.padding(.vertical, 3).foregroundStyle(cleanupColor(item.eligible))
+                        .help([item.path, item.ownerPath].compactMap { $0 }.joined(separator: "\nSource: "))
+                }.width(min: 170, ideal: 240)
+                TableColumn(store.source == .xcode ? "Source project" : "Kind") { item in
+                    Text(item.ownerPath.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? item.kind.rawValue)
+                        .lineLimit(1).truncationMode(.middle).foregroundStyle(cleanupColor(item.eligible))
+                        .help(item.ownerPath.map { "Source workspace: \($0)\nCross-checked against ~/repos and Git’s registered worktrees. A project match is an ownership safeguard, not evidence of a running build." } ?? item.kind.rawValue)
+                }.width(min: 120, ideal: store.source == .xcode ? 190 : 120)
+                TableColumn("File blocks") { Text(formatBytes($0.bytes)).monospacedDigit().foregroundStyle(cleanupColor($0.eligible)).help("Allocated file blocks; APFS clones may share them with other rows. Not uniquely recoverable space.") }.width(110)
+                TableColumn("Private bytes²") { Text($0.privateBytes.map(formatBytes) ?? "—").monospacedDigit().foregroundStyle(cleanupColor($0.eligible)).help(privateSizeExplanation) }.width(100)
+                TableColumn("Last activity") { Text($0.modified.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(cleanupColor($0.eligible)) }.width(min: 140, ideal: 150)
                 TableColumn("Cleanup") { item in
-                    Text(item.eligibility.label).foregroundStyle(item.eligible ? .primary : .secondary).lineLimit(1).help(item.eligibility.explanation)
+                    Text(item.eligibility.label).foregroundStyle(cleanupColor(item.eligible)).lineLimit(1).help(item.eligibility.explanation)
                 }.width(min: 180, ideal: 230)
-            }.overlay {
-                if visibleLocal.isEmpty && !store.loading.contains(store.source) {
-                    VStack(spacing: 10) {
-                        Text(candidatesOnly ? "No safe cleanup candidates" : "No matching data").font(.headline)
-                        Text(candidatesOnly ? "Active, recent and unverified items are kept." : "Try a different filter.").foregroundStyle(.secondary)
-                        if candidatesOnly { Button("Show All Data") { candidatesOnly = false } }
-                    }.padding(24).background(.background.opacity(0.96), in: RoundedRectangle(cornerRadius: 10))
+            } rows: {
+                cleanupRows(matchingLocal, eligible: \.eligible)
+            }
+            .contextMenu(forSelectionType: String.self) { selected in
+                if selected.count == 1, let item = store.localEntries.first(where: { selected.contains($0.id) }) {
+                    Button("Show Data in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)]) }
+                    if let source = item.ownerPath {
+                        Button("Show Source Project in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: source)]) }
+                            .disabled(!FileManager.default.fileExists(atPath: source))
+                    }
+                }
+            }
+            .overlay {
+                if !store.loading.contains(store.source) {
+                    if matchingLocal.isEmpty {
+                        empty(store.localEntries.isEmpty ? "No data found" : "No matching data",
+                              detail: store.localEntries.isEmpty ? "No supported \(store.source == .xcode ? "build or index data" : "Chrome data") was found." : "Try a different text filter. \(store.localEntries.count) items were found in total.")
+                    } else if safeOnly && !matchingLocal.contains(where: \.eligible) {
+                        noSafeItems(count: matchingLocal.count)
+                    }
                 }
             }
         }
     }
 
-    private var dockerItems: [DockerItem] { (store.docker?.items ?? []).filter { $0.kind == dockerKind && (dockerKind == .buildCache || !candidatesOnly || $0.eligibility.canClean) && matches($0.name) } }
+    private var dockerEntries: [DockerItem] { (store.docker?.items ?? []).filter { $0.kind == dockerKind } }
+    private var dockerItems: [DockerItem] {
+        dockerEntries.filter { matches($0.name + " " + $0.eligibility.explanation + " " + ($0.inUse ? "In use" : "Unused")) }.sorted {
+            if $0.bytes != $1.bytes { return $0.bytes > $1.bytes }
+            return $0.id < $1.id
+        }
+    }
     private var dockerTable: some View {
         VStack(spacing: 0) {
             HStack {
@@ -254,31 +358,75 @@ struct ContentView: View {
                     Text("Images").tag(DockerItem.Kind.image)
                     Text("Build cache").tag(DockerItem.Kind.buildCache)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 210)
+                Text("\(dockerEntries.count) found · \(dockerEntries.filter { $0.eligibility.canClean }.count) safe").foregroundStyle(.secondary)
                 Spacer()
-                if dockerKind == .image { Toggle("Candidates only", isOn: $candidatesOnly).toggleStyle(.checkbox) }
+                eligibilityFilter
                 searchField
             }.padding(.horizontal, 18).padding(.vertical, 10)
-            Table(dockerItems, selection: $store.selection) {
-                TableColumn("Name") { Text($0.name).lineLimit(1).help($0.name) }.width(min: 230, ideal: 360)
-                TableColumn("Size") { Text(formatBytes($0.bytes)).monospacedDigit() }.width(90)
+            Table(of: DockerItem.self, selection: $store.selection) {
+                TableColumn("Name") { item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name).lineLimit(1)
+                        if item.kind == .image {
+                            Text("\(item.id.replacingOccurrences(of: "sha256:", with: "").prefix(12)) · \(item.references.tags.count) \(item.references.tags.count == 1 ? "tag" : "tags")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 3).foregroundStyle(cleanupColor(item.eligibility.canClean))
+                        .help(item.kind == .image ? ([item.id] + item.references.tags + item.references.digests).joined(separator: "\n") : item.name)
+                }.width(min: 210, ideal: 320)
+                TableColumn("Size") { Text(formatBytes($0.bytes)).monospacedDigit().foregroundStyle(cleanupColor($0.eligibility.canClean)) }.width(90)
                 TableColumn("Unique / shared") { item in
-                    Text(item.uniqueBytes.map { formatBytes($0) } ?? "—") + Text(" / ") + Text(item.sharedBytes.map { formatBytes($0) } ?? "—")
+                    Text("\(item.uniqueBytes.map(formatBytes) ?? "—") / \(item.sharedBytes.map(formatBytes) ?? "—")")
+                        .foregroundStyle(cleanupColor(item.eligibility.canClean))
                 }.width(160)
+                TableColumn(dockerKind == .image ? "Created" : "Last used") {
+                    Text($0.lastUsed).foregroundStyle(cleanupColor($0.eligibility.canClean))
+                }.width(100)
                 TableColumn("Docker usage") { item in
-                    Text(item.inUse ? "In use" : "Unused").foregroundStyle(.secondary)
+                    Text(item.inUse ? "In use" : "Unused").foregroundStyle(cleanupColor(item.eligibility.canClean))
                         .help(item.containerCount.map { "\($0) running or stopped containers reference this image. This is Docker's usage definition; unused does not mean abandoned." } ?? "Docker's build cache usage flag does not identify whether the owning project is active.")
                 }.width(110)
-                TableColumn("Cleanup") { Text($0.eligibility.label).lineLimit(1).help($0.eligibility.explanation) }.width(min: 170, ideal: 200)
-            }.overlay {
-                if dockerItems.isEmpty && !store.loading.contains(.docker) {
-                    VStack(spacing: 10) {
-                        Text(candidatesOnly ? "No safe cleanup candidates" : "No matching items").font(.headline)
-                        Text("Tagged images, container references and active builds are protected.").font(.callout).foregroundStyle(.secondary)
-                        if candidatesOnly { Button("Show All Data") { candidatesOnly = false } }
-                    }.padding(24).background(.background.opacity(0.96), in: RoundedRectangle(cornerRadius: 10))
+                TableColumn("Cleanup") { Text($0.eligibility.label).lineLimit(1).foregroundStyle(cleanupColor($0.eligibility.canClean)).help($0.eligibility.explanation) }.width(min: 170, ideal: 200)
+            } rows: {
+                cleanupRows(dockerItems, eligible: \.eligibility.canClean)
+            }
+            .overlay {
+                if !store.loading.contains(.docker) {
+                    if dockerItems.isEmpty {
+                        empty(dockerEntries.isEmpty ? "No \(dockerKind == .image ? "images" : "build cache") found" : "No matching items",
+                              detail: dockerEntries.isEmpty ? "Docker reported no \(dockerKind == .image ? "images" : "build cache") in its local inventory." : "Try a different text filter. \(dockerEntries.count) items were found in total.")
+                    } else if safeOnly && !dockerItems.contains(where: { $0.eligibility.canClean }) {
+                        noSafeItems(count: dockerItems.count)
+                    }
                 }
             }
         }
+    }
+
+    @TableRowBuilder<Item> private func cleanupRows<Item: Identifiable>(
+        _ items: [Item], eligible: KeyPath<Item, Bool>
+    ) -> some TableRowContent<Item> {
+        let safe = items.filter { $0[keyPath: eligible] }
+        let protected = items.filter { !$0[keyPath: eligible] }
+        if !safe.isEmpty {
+            Section("Safe to clean · \(safe.count)") {
+                ForEach(safe) { TableRow($0) }
+            }
+        }
+        if !safeOnly && !protected.isEmpty {
+            Section("Protected · \(protected.count)") {
+                ForEach(protected) { TableRow($0) }
+            }
+        }
+    }
+
+    private func noSafeItems(count: Int) -> some View {
+        VStack(spacing: 10) {
+            Text(search.isEmpty ? "Nothing safe to clean right now" : "No safe items match this filter").font(.headline)
+            Text("\(count) \(count == 1 ? "item was" : "items were") found, but \(count == 1 ? "it is" : "they are") protected.")
+                .foregroundStyle(.secondary)
+            Button("Show protected items") { safeOnly = false }
+        }.padding(20).background(.background.opacity(0.94), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var eligibleLocal: [LocalEntry] {
@@ -286,6 +434,28 @@ struct ContentView: View {
     }
     private var selectedImages: [String] {
         dockerItems.filter { store.selection.contains($0.id) && $0.eligibility.canClean && $0.kind == .image }.map(\.id)
+    }
+
+    private var visibleIDs: Set<String> {
+        switch store.source {
+        case .overview: []
+        case .timeMachine: Set(store.snapshots.filter { matches($0.name) }.map(\.id))
+        case .xcode, .browser: Set(matchingLocal.filter { !safeOnly || $0.eligible }.map(\.id))
+        case .docker: Set(dockerItems.filter { !safeOnly || $0.eligibility.canClean }.map(\.id))
+        }
+    }
+
+    private var selectAll: some View {
+        let ids = visibleIDs
+        return Toggle("Select all", isOn: Binding(
+            get: { !ids.isEmpty && ids.isSubset(of: store.selection) },
+            set: { selected in
+                if selected { store.selection.formUnion(ids) }
+                else { store.selection.subtract(ids) }
+            }
+        )).toggleStyle(.checkbox)
+            .disabled(ids.isEmpty || store.isBusy || store.errors[store.source] != nil)
+            .help("Select or deselect every item shown by the current filters. Protected items can be inspected but will not be removed.")
     }
 
     @ViewBuilder private var footer: some View {
@@ -297,28 +467,34 @@ struct ContentView: View {
                 Button(store.scheduleLabel + "…") { showSchedule = true }
                 Button("Show Source") { if let overviewSelection { store.source = overviewSelection } }.disabled(overviewSelection == nil)
             case .timeMachine:
-                Button("Snapshot sizes…") { showSnapshotSizes = true }.popover(isPresented: $showSnapshotSizes) { snapshotSizeHelp }
+                selectAll
                 Text("\(store.selection.count) selected").font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                Button("Snapshot sizes…") { showSnapshotSizes = true }.popover(isPresented: $showSnapshotSizes) { snapshotSizeHelp }
                 Button("Delete Selected…") { action = .snapshot(.delete(names: store.selection.sorted())) }
                     .disabled(!store.canAct || store.selection.isEmpty)
             case .xcode, .browser:
-                Text("\(store.selection.count) selected").font(.caption).foregroundStyle(.secondary)
+                selectAll
+                Text("\(store.selection.count) selected · \(eligibleLocal.count) safe").font(.caption).foregroundStyle(.secondary)
                 if let item = store.localEntries.first(where: { store.selection.contains($0.id) }) {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)]) }
                 }
                 Spacer()
                 Text(store.source == .xcode ? "Existing repositories and worktrees are protected." : "24-hour minimum · process and open-file checks")
                     .font(.caption).foregroundStyle(.secondary)
-                Button(store.source == .xcode ? "Clear Selected…" : "Remove Selected Copies…") {
+                Button(store.source == .xcode ? "Clear Safe Items…" : "Remove Safe Copies…") {
                     action = store.source == .xcode ? .xcode(eligibleLocal.map(\.id)) : .chrome(eligibleLocal.map(\.id))
-                }.disabled(!store.canAct || eligibleLocal.isEmpty || eligibleLocal.count != store.selection.count)
+                }.disabled(!store.canAct || eligibleLocal.isEmpty)
+                    .help("Only selected items that pass the safety checks are removed. Protected items remain untouched.")
             case .docker:
-                Text("Unused: no running or stopped containers. Tagged images are kept.").font(.caption).foregroundStyle(.secondary)
+                selectAll
+                Text("\(store.selection.count) selected · \(selectedImages.count) safe").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if dockerKind == .image {
-                    Button("Remove Selected…") { action = .images(selectedImages) }
-                        .disabled(!store.canAct || selectedImages.isEmpty || selectedImages.count != store.selection.count)
+                    Text("Shared layers mean image sizes cannot be added together.").font(.caption).foregroundStyle(.secondary)
+                    Button("Remove Safe Images…") { action = .images(selectedImages) }
+                        .disabled(!store.canAct || selectedImages.isEmpty)
+                        .help("Only selected images that pass the safety checks are removed. Protected images remain untouched.")
                 } else {
                     Text("Build cache is managed by your build tools.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -358,6 +534,13 @@ struct ContentView: View {
     private var helpContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Space for the next build").font(.headline)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(BuildInformation.current.title)
+                Text("Build \(BuildInformation.current.number) · \(BuildInformation.current.source)")
+                Text(BuildInformation.current.date)
+                Text(BuildInformation.current.location)
+            }
+            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             Text("Build tools can stop when physically free space is low, even when Finder reports plenty available. Reclaim shows free APFS container space separately from macOS’s estimate, which includes reclaimable data.")
             Text("File footprints can share blocks. Private bytes come from macOS and exclude blocks retained by other clones or snapshots; unknown values stay blank. Private-byte sums exclude directory metadata and can underestimate group cleanup. Docker's unique/shared layer sizes are shown separately. None is a guaranteed purge result.")
             Text("Reclaim is a safety net. Existing repositories and worktrees are protected, and uncertain usage keeps the data. Project tools remain responsible for their own worktree and cache lifecycle. Schedules apply the same checks as manual cleanup.")

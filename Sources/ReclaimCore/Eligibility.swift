@@ -9,7 +9,7 @@ public enum CleanupEligibility: Hashable, Sendable {
     public var canClean: Bool { if case .candidate = self { true } else { false } }
     public var label: String {
         switch self {
-        case .candidate: "Candidate"
+        case .candidate: "Safe to clean"
         case let .protected(reason): reason
         case .unknown: "Unverified — kept"
         case .inspectOnly: "Inspect only"
@@ -19,7 +19,7 @@ public enum CleanupEligibility: Hashable, Sendable {
         switch self {
         case .candidate: "Passed the current checks. Ownership, age and usage are checked again before removal."
         case let .protected(reason): reason
-        case let .unknown(reason): "Kept because eligibility could not be verified: \(reason)"
+        case let .unknown(reason): "Protected because cleanup safety could not be verified: \(reason)"
         case .inspectOnly: "Reclaim does not delete this data."
         }
     }
@@ -184,7 +184,7 @@ public struct RepositoryInspector: RepositoriesInspecting {
 public enum XcodePolicy {
     public static let minimumAge: TimeInterval = 7 * 86400
     public static func ownership(workspace: URL, inventory: RepositoryInventory) -> CleanupEligibility? {
-        if let owner = inventory.owner(of: workspace) { return .protected("Worktree exists · \(owner.lastPathComponent)") }
+        if let owner = inventory.owner(of: workspace) { return .protected("Registered worktree · \(owner.lastPathComponent)") }
         // lstat distinguishes confirmed absence from access failures. A symlink,
         // renamed project in a surviving directory, or non-Git workspace stays kept.
         var info = stat()

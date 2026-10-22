@@ -17,6 +17,8 @@ jobs:
         env:
           BUILD_NUMBER: ${{ github.run_number }}
         run: ./scripts/package.sh --unsigned
+      - name: Verify update packaging with generated fixtures
+        run: ./Tests/Packaging/test-appcast.sh
       - uses: actions/upload-artifact@v4
         with:
           name: unsigned-preview

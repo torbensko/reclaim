@@ -44,15 +44,43 @@ that has not reached the backup destination.
 8. Handle permissions, partial deletion, an empty list, stale selections, and
    unsupported volumes without suggesting that a failed operation succeeded.
 
+After every manual cleanup outcome (including failure and cancellation), rescan
+all source inventories and fetch fresh SSD free/available readings independently.
+Measure a fresh baseline before cleanup; never compare against a stale display.
+Take a reading immediately afterward, repeat over about a minute to catch delayed
+APFS/Docker release, and take another reading when inventory refresh finishes.
+Slow Xcode or Browser inspection must not delay publication of free-space readings.
+Name the sources still being scanned, show a last-checked time, distinguish the
+cleanup command finishing from the follow-up checks, and explain disabled controls.
+Controls remain disabled until full inventory checks finish, but the observation
+period alone does not prevent a new action. A new refresh/cleanup cancels previous
+polling; late results cannot overwrite the new readings. Failed measurements are
+unknown, never zero or silently retained stale values. Report observed free-space
+change with its limits, not a guaranteed per-source recovery amount.
+
 ## Interface direction
 
 The October 21 revision renames the app **Reclaim** and broadens it to an
 opinionated developer-storage utility. The user wants specific known culprits,
 not a disk scanner looking for arbitrary large files. Start with Overview and
 provide Time Machine, Xcode, Docker and Browser tabs in the toolbar, following
-Activity Monitor's native table-based layout. Keep the physically free statistic
-prominent above the table and the available estimate secondary. The current
-internal drive needs only a small label; no sidebar or dashboard cards.
+Activity Monitor's native table-based layout. Overview leads with physically free
+space, with the available estimate secondary. Each source page leads with a large
+reclaimable-space figure above its table, keeping SSD free/available space alongside
+it. The current internal drive needs only a small label; no sidebar or dashboard cards.
+
+The source headline describes the entire source, unaffected by selection or table
+filters. Docker promotes its own whole-store estimate as **potentially reclaimable**,
+explicitly identifying unused images kept by Reclaim. Switching to Build cache
+shows Docker's cache estimate with **inspection-only** next to it. Neither figure
+is a total for safe or selected rows. Xcode and Browser show private bytes
+from items safe to clean only, with shared-block recovery potentially additional.
+If any safe item's private size is unknown, the headline stays unknown;
+unmeasured kept items do not affect it. No safe items means zero. Time Machine
+shows an unknown size while snapshots exist and zero only for a confirmed empty
+inventory. Loading and failed source checks must never look like measured zero.
+Keep measurement limitations in the short subtitle and help; do not sum overlapping
+footprints or use the free/available gap to invent a reclaimable total.
 
 Use the system's Liquid Glass toolbar on macOS 26 and later: grouped monochrome
 action icons in one compact trailing group and a centered capsule-shaped source
@@ -77,8 +105,32 @@ eraser. The user wants coding tools to own worktree and build-folder lifecycle.
 Protect active development even if this leaves substantial storage in place.
 Age alone does not prove abandonment. Uncertain ownership or failed process/file
 inspection means keep the data. Apply identical eligibility rules to manual and
-scheduled cleanup and recheck before deleting. Default detail tables to candidates,
-with an option to show all data and its protection reason.
+scheduled cleanup and recheck before deleting. Show all discovered data by
+default, grouped into **Safe to clean** followed by **Protected**. These are all
+relevant storage items; the distinction is cleanup safety, not applicability.
+“Safe” means the current checks passed; the same checks run again before removal.
+Ordering is automatic, with largest items first within each group; there is no
+sorting toggle. Keep protected rows dimmed with readable protection reasons.
+The **Safe only** filter hides the protected group and is off by default.
+Found/safe counts still describe the full inventory when filters are on.
+If no safe items remain, state how many were found and offer to show the
+protected items, rather than suggesting the inventory is empty. Text search
+matches paths and reasons as well as names. Mixed selections act only on
+safe items, with the safe count visible before confirmation. Protected
+rows remain selectable for inspection and Finder actions. Each source page has
+a **Select all** checkbox beside its selection count. It selects/deselects all
+rows shown by the current search and Safe only filters, never hidden rows or
+section headings. Removal still includes only safe selected items and requires
+confirmation. Changing filters or source clears the selection.
+
+The user explicitly asked to cross-check project folders rather than infer
+activity from an app being open. Xcode already resolves each DerivedData entry's
+source workspace against `~/repos` and Git's registered worktrees. Show the
+source path directly, allow revealing it in Finder, and distinguish a registered
+worktree/ownership safeguard from evidence of a process actually using data.
+A registered worktree may have a missing directory; do not label registration
+as proof that the folder exists. Docker's current unused status is engine
+evidence; Reclaim does not yet associate its cache records with project folders.
 
 - **Xcode:** Build, Index.noindex and Index inside recognized DerivedData projects.
   Preserve SourcePackages, logs, archives, simulators and source projects. The
@@ -89,13 +141,26 @@ with an option to show all data and its protection reason.
   no Xcode/build processes, and no open-file users. Last activity includes contained
   file modification times and Xcode's project-access metadata. Recheck ownership,
   activity and usage before removal.
-- **Docker:** Pin the local Unix socket. Inspect images and build cache. Allow
-  manual removal only for untagged images older than 24 hours with zero running
-  or stopped container references and no active builder reported by Docker.
-  Display Docker's own in-use/unused status separately from Reclaim's eligibility;
-  a tagged unused image stays protected. Build cache is inspection-only because
-  its owning project's activity cannot be reliably established. Never delete
-  containers/volumes, prune build cache, use system prune or force image removal.
+- **Docker:** Pin the local Unix socket. The October 22 correction makes old,
+  unused tagged images available for manual cleanup, matching the type of images
+  shown in Docker Desktop's unused-image list. Tags alone do not establish use.
+  Retain the 24-hour minimum, running/stopped container checks and reported-builder
+  guard. Inspect all tags and digest references: `system df` may report only one
+  tag for an image that has many. Display one row per immutable image ID, show its
+  tags and creation age, and avoid counting aliases as separate stored images.
+  Show Docker's whole-store reclaimable-image estimate separately; it can include
+  images held by Reclaim's age rule and is not a selected-row or SSD recovery total.
+  Before each removal, re-read usage and references. Stop on new references,
+  container use, changed tag-to-ID mappings, inspection failure or engine refusal.
+  For images with multiple references, remove verified aliases individually and
+  finish by immutable ID when Docker allows it, always without force and with
+  `--no-prune` to retain unselected parents. Confirm removal of all local tags;
+  locally built images may need rebuilding. The multi-step operation is not atomic:
+  it can stop after some tags or images have been removed, and concurrent Docker
+  changes can race checks. Refresh and report partial outcomes. Build cache stays
+  inspection-only because project activity cannot be reliably established. Never
+  delete containers/volumes, prune build cache, use system prune or force removal.
+  Docker cleanup remains manual.
 - **Chrome:** The user's example lives under
   `X/com.google.Chrome.code_sign_clone/code_sign_clone.lWRU6k/Google Chrome.app.bundle`
   beside their macOS temporary folder. These are app signing copies, not generic
@@ -149,6 +214,26 @@ settings if installation fails. Do not leave duplicate jobs active for Chrome.
 Disabling Reclaim's job must not silently restart the old service.
 
 ## Scope and safeguards
+
+### App versions and updates
+
+The user wants to use the published app as another user would, from Applications,
+while testing development builds separately from the project build folder.
+Reclaim Dev has a distinct name and bundle identity and cannot self-update or
+replace production. Both inspect real storage and use the same cleanup lock.
+Provide an easy menu shortcut back to the app in Applications. About identifies
+the channel, version, build, revision and build date so copies are distinguishable.
+
+Use Sparkle for production updates. Check only the stable release feed, verify
+signed feeds and update archives, and deliver the same notarized ZIP offered for
+manual download. Automatic checks are enabled with a user-visible off switch;
+silent installation is not enabled by default. Wait for ongoing storage work
+before a requested update restart. Updating the app never enables a cleanup job
+or performs a purge. A previously copied scheduled helper changes only when the
+user explicitly saves their schedule. Existing apps without the updater need
+one manual installation of the first release that includes it.
+
+### Storage operations
 
 All snapshot commands target `/System/Volumes/Data`, verified to be an internal
 APFS volume before loading the screen and again before an elevated action.

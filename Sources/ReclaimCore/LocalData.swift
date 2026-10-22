@@ -52,6 +52,13 @@ public struct LocalReport: Sendable {
         guard entries.allSatisfy({ $0.privateBytes != nil }) else { return nil }
         return entries.reduce(0) { $0 + ($1.privateBytes ?? 0) }
     }
+    /// Only applicable data contributes. A missing measurement is not zero,
+    /// even when other applicable entries have known private sizes.
+    public var applicablePrivateBytes: Int64? {
+        let applicable = entries.filter(\.eligible)
+        guard applicable.allSatisfy({ $0.privateBytes != nil }) else { return nil }
+        return applicable.reduce(0) { $0 + ($1.privateBytes ?? 0) }
+    }
 }
 
 public enum LocalFiles {

@@ -1,5 +1,17 @@
 import Foundation
 
+public struct DockerImageReferences: Equatable, Sendable {
+    public let tags: [String]
+    public let digests: [String]
+    public var all: Set<String> { Set(tags + digests) }
+    var removableByID: Bool {
+        if all.count <= 1 { return true }
+        guard tags.count == 1, let separator = tags[0].lastIndex(of: ":") else { return false }
+        let repository = tags[0][..<separator]
+        return digests.allSatisfy { $0.hasPrefix(repository + "@sha256:") }
+    }
+}
+
 public struct DockerItem: Identifiable, Sendable {
     public enum Kind: String, Sendable { case image = "Image", buildCache = "Build cache" }
     public let id: String
@@ -12,6 +24,7 @@ public struct DockerItem: Identifiable, Sendable {
     public let uniqueBytes: Int64?
     public let sharedBytes: Int64?
     public let eligibility: CleanupEligibility
+    public let references: DockerImageReferences
 }
 
 public struct DockerReport: Sendable {
@@ -19,6 +32,7 @@ public struct DockerReport: Sendable {
     public let imageBytes: Int64
     public let cacheBytes: Int64
     public let reclaimableCacheBytes: Int64
+    public let reclaimableImageBytes: Int64?
     public var candidateCount: Int { items.filter { $0.eligibility.canClean }.count }
 }
 
@@ -43,10 +57,17 @@ public struct DockerService: Sendable {
     public func load() async throws -> DockerReport {
         let summary = try await runner.run(command(["system", "df", "--format", "{{json .}}"], timeout: 30)).checked()
         let detail = try await runner.run(command(["system", "df", "--verbose", "--format", "{{json .}}"], timeout: 30)).checked()
-        return try Self.parse(summary: summary.output, detail: detail.output)
+        let report = try Self.parse(summary: summary.output, detail: detail.output)
+        let ids = report.items.filter { $0.kind == .image }.map(\.id)
+        guard !ids.isEmpty else { return report }
+        // system df can report just one tag per image, even when Desktop shows many.
+        let references = try await inspectReferences(ids)
+        guard Set(references.keys) == Set(ids) else { throw CleanupError.stale }
+        return try Self.parse(summary: summary.output, detail: detail.output, references: references)
     }
 
-    public static func parse(summary: Data, detail: Data, now: Date = .now) throws -> DockerReport {
+    public static func parse(summary: Data, detail: Data, now: Date = .now,
+                             references: [String: DockerImageReferences]? = nil) throws -> DockerReport {
         guard let object = try JSONSerialization.jsonObject(with: detail) as? [String: Any] else { throw CleanupError.invalidResponse }
         func rows(_ key: String) throws -> [[String: Any]] {
             if object[key] is NSNull { return [] }
@@ -56,12 +77,18 @@ public struct DockerService: Sendable {
         let images = try rows("Images")
         let caches = try rows("BuildCache")
         var imageBytes: Int64?
+        var reclaimableImages: Int64?
         var cacheBytes: Int64?
         var reclaimable: Int64?
         for line in String(decoding: summary, as: UTF8.self).split(separator: "\n") {
             guard let row = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                   let size = row["Size"] as? String else { throw CleanupError.invalidResponse }
-            if row["Type"] as? String == "Images" { imageBytes = try parseSize(size) }
+            if row["Type"] as? String == "Images" {
+                imageBytes = try parseSize(size)
+                if let value = row["Reclaimable"] as? String {
+                    reclaimableImages = try parseSize(String(value.split(separator: " ").first ?? ""))
+                }
+            }
             if row["Type"] as? String == "Build Cache" {
                 cacheBytes = try parseSize(size)
                 guard let value = row["Reclaimable"] as? String else { throw CleanupError.invalidResponse }
@@ -80,25 +107,38 @@ public struct DockerService: Sendable {
             guard let row = rows.first, let size = row["Size"] as? String else { throw CleanupError.invalidResponse }
             var containerCount = 0
             var tags: [String] = []
+            var digests: [String] = []
             for entry in rows {
                 guard let countString = entry["Containers"] as? String, let count = Int(countString), count >= 0,
                       let repository = entry["Repository"] as? String, let tag = entry["Tag"] as? String else { throw CleanupError.invalidResponse }
                 containerCount = max(containerCount, count)
-                if repository != "<none>" || tag != "<none>" { tags.append("\(repository):\(tag)") }
+                if repository != "<none>" && tag != "<none>" { tags.append("\(repository):\(tag)") }
+                if repository != "<none>", let digest = entry["Digest"] as? String, digest != "<none>" {
+                    digests.append("\(repository)@\(digest)")
+                }
             }
+            let imageReferences: DockerImageReferences
+            if let references {
+                guard let value = references[id] else { throw CleanupError.stale }
+                imageReferences = value
+            } else {
+                imageReferences = DockerImageReferences(tags: Set(tags).sorted(), digests: Set(digests).sorted())
+            }
+            guard imageReferences.all.allSatisfy(Self.validImageReference) else { throw CleanupError.invalidResponse }
             let created = (row["CreatedAt"] as? String).flatMap(Self.parseDate)
             let decision: CleanupEligibility
             if containerCount > 0 { decision = .protected("Referenced by containers") }
-            else if !tags.isEmpty { decision = .protected("Tagged image — kept") }
             else if builderBusy { decision = .protected("Builder in use") }
             else if let created {
                 decision = now.timeIntervalSince(created) >= 24 * 3600 ? .candidate : .protected("Keep for 24 hours")
             } else { decision = .unknown("Docker did not report a usable creation time.") }
-            items.append(DockerItem(id: id, name: tags.isEmpty ? "Untagged · \(id.prefix(19))" : Set(tags).sorted().joined(separator: ", "),
+            let names = imageReferences.tags.isEmpty ? imageReferences.digests : imageReferences.tags
+            items.append(DockerItem(id: id, name: names.isEmpty ? "Untagged · \(id.prefix(19))" : names.joined(separator: ", "),
                                     bytes: try parseSize(size), lastUsed: row["CreatedSince"] as? String ?? "—",
                                     inUse: containerCount > 0, kind: .image, containerCount: containerCount,
                                     uniqueBytes: (row["UniqueSize"] as? String).flatMap { try? parseSize($0) },
-                                    sharedBytes: (row["SharedSize"] as? String).flatMap { try? parseSize($0) }, eligibility: decision))
+                                    sharedBytes: (row["SharedSize"] as? String).flatMap { try? parseSize($0) }, eligibility: decision,
+                                    references: imageReferences))
         }
         for row in caches {
             guard let id = row["ID"] as? String, let size = row["Size"] as? String,
@@ -106,11 +146,40 @@ public struct DockerService: Sendable {
             items.append(DockerItem(id: "cache:" + id, name: (row["Description"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id,
                                     bytes: try parseSize(size), lastUsed: row["LastUsedSince"] as? String ?? "—",
                                     inUse: inUse == "true", kind: .buildCache, containerCount: nil,
-                                    uniqueBytes: nil, sharedBytes: nil, eligibility: .protected("Project ownership unknown")))
+                                    uniqueBytes: nil, sharedBytes: nil, eligibility: .protected("Project ownership unknown"),
+                                    references: DockerImageReferences(tags: [], digests: [])))
         }
         guard let imageBytes, let cacheBytes, let reclaimable else { throw CleanupError.invalidResponse }
         return DockerReport(items: items.sorted { $0.bytes > $1.bytes }, imageBytes: imageBytes, cacheBytes: cacheBytes,
-                            reclaimableCacheBytes: reclaimable)
+                            reclaimableCacheBytes: reclaimable, reclaimableImageBytes: reclaimableImages)
+    }
+
+    public static func validImageReference(_ value: String) -> Bool {
+        guard let range = value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,1023}$"#, options: .regularExpression) else { return false }
+        return range == value.startIndex..<value.endIndex
+    }
+
+    private func inspectReferences(_ names: [String]) async throws -> [String: DockerImageReferences] {
+        // Request only identity fields, never image configuration/environment values.
+        let format = #"{"ID":{{json .Id}},"RepoTags":{{json .RepoTags}},"RepoDigests":{{json .RepoDigests}}}"#
+        let result = try await runner.run(command(["image", "inspect", "--format", format, "--"] + names, timeout: 30)).checked()
+        return try Self.parseReferences(result.output)
+    }
+
+    public static func parseReferences(_ data: Data) throws -> [String: DockerImageReferences] {
+        var references: [String: DockerImageReferences] = [:]
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            guard let row = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let id = row["ID"] as? String, validImageID(id), references[id] == nil else { throw CleanupError.invalidResponse }
+            func names(_ key: String) throws -> [String] {
+                if row[key] is NSNull { return [] }
+                guard let names = row[key] as? [String], names.allSatisfy(validImageReference) else { throw CleanupError.invalidResponse }
+                return Set(names).sorted()
+            }
+            references[id] = try DockerImageReferences(tags: names("RepoTags"), digests: names("RepoDigests"))
+        }
+        guard !references.isEmpty else { throw CleanupError.invalidResponse }
+        return references
     }
 
     public static func parseDate(_ value: String) -> Date? {
@@ -144,8 +213,35 @@ public struct DockerService: Sendable {
         let current = try await load()
         let unused = Set(current.items.filter { $0.kind == .image && $0.eligibility.canClean }.map(\.id))
         guard Set(ids).isSubset(of: unused) else { throw CleanupError.stale }
-        // Docker refuses an image that becomes used; never override that protection.
-        return try await runner.run(command(["image", "rm"] + Set(ids).sorted())).checked().text
+        var output: [String] = []
+        for id in Set(ids).sorted() {
+            let original = current.items.first { $0.id == id }!
+            var remaining = original.references.all
+            var changed = false
+            while true {
+                // Re-read usage and tags before each step. Retagging, new container
+                // references, failed checks or builder activity stop the operation.
+                let fresh = try await load()
+                guard let item = fresh.items.first(where: { $0.id == id }) else {
+                    guard changed else { throw CleanupError.stale }
+                    break
+                }
+                guard item.eligibility.canClean, item.references.all.isSubset(of: remaining) else { throw CleanupError.stale }
+                if changed && item.references.all == remaining { throw CleanupError.unavailable("Docker kept the image. Refresh to review its remaining references.") }
+                remaining = item.references.all
+                // An ID with multiple references cannot be removed without force.
+                // Untag only verified aliases of this selected image, then let the
+                // engine remove it normally. --no-prune preserves unselected parents.
+                let reference = item.references.removableByID ? id : (item.references.tags.first ?? item.references.digests.first!)
+                if reference != id {
+                    let resolved = try await inspectReferences([reference])
+                    guard resolved.count == 1, resolved[id] == item.references else { throw CleanupError.stale }
+                }
+                output.append(try await runner.run(command(["image", "rm", "--no-prune", "--", reference], timeout: 60)).checked().text)
+                changed = true
+            }
+        }
+        return output.joined(separator: "\n")
     }
 
     public func cleanBuildCache() async throws -> String {

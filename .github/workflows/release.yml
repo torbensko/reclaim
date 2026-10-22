@@ -22,9 +22,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           missing=0
-          for name in CERTIFICATE_P12 CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_TEAM_ID; do
+          for name in CERTIFICATE_P12 CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_TEAM_ID SPARKLE_PRIVATE_KEY; do
             if [[ -z "${!name}" ]]; then
               echo "::error::Missing Actions secret: $name"
               missing=1
@@ -62,6 +63,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUILD_NUMBER: ${{ github.run_number }}
         run: ./scripts/package.sh
+      - name: Sign and verify the release update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./scripts/generate-appcast.sh
       - name: Remove temporary signing keychain
         if: always()
         run: |
@@ -81,6 +86,7 @@ jobs:
           path: |
             dist/Reclaim.dmg
             dist/Reclaim.zip
+            dist/appcast.xml
             dist/SHA256SUMS.txt
           if-no-files-found: error
   publish:
@@ -102,5 +108,5 @@ jobs:
           (cd artifacts && sha256sum --check SHA256SUMS.txt)
           gh release create "v$RELEASE_VERSION" --draft --target "$GITHUB_SHA" \
             --title "Reclaim $RELEASE_VERSION" --notes-file RELEASE_NOTES.md \
-            artifacts/Reclaim.dmg artifacts/Reclaim.zip artifacts/SHA256SUMS.txt
+            artifacts/Reclaim.dmg artifacts/Reclaim.zip artifacts/appcast.xml artifacts/SHA256SUMS.txt
           gh release edit "v$RELEASE_VERSION" --draft=false --latest
