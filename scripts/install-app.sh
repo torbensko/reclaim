@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
         *) usage >&2; exit 1 ;;
     esac
 done
-[[ "$source_selected" == true ]] || { usage >&2; echo 'Development builds run from dist/Reclaim Dev.app; this installer accepts signed releases only.' >&2; exit 1; }
+[[ "$source_selected" == true ]] || { usage >&2; echo 'Local builds run from dist/Reclaim.app; this installer accepts signed releases only.' >&2; exit 1; }
 if /usr/bin/pgrep -x Reclaim >/dev/null; then
     echo 'Quit Reclaim, then run this installer again.' >&2
     exit 1

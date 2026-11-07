@@ -9,9 +9,9 @@ exists to make that distinction visible and let the user request reclamation of
 known local sources before continuing work. Preserve this motivation as the
 app expands beyond Time Machine.
 
-Reclaim is an opinionated developer-storage utility. It covers local Time Machine
-snapshots, selected Xcode generated build/index data, local Docker images and
-build cache, and identified browser artifacts. Inspect only known source roots;
+Reclaim is an opinionated developer-storage utility for this user’s tools. It covers
+local Time Machine snapshots, Xcode and repository-generated build data, local
+Docker images and build cache, browser artifacts, and Codex/Claude diagnostic data. Inspect only known source roots;
 do not perform broad disk scans. Time Machine scope stays on the internal startup
 Data volume: `/System/Volumes/Data`. Do not enumerate or delete external backups
 or network destinations. Do not describe all local
@@ -29,8 +29,13 @@ Preserve these constraints:
 - Individual deletion is constrained to exact, validated Time Machine snapshot
   names on the local Data volume. Never use `tmutil deletelocalsnapshots <date>`:
   it affects matching dates on all mounted disks.
-- No cleanup on app launch and no backup-setting changes. Automatic cleanup
-  requires an explicitly confirmed schedule; Time Machine always stays manual.
+- No cleanup on app launch. The October 26 request permits an explicit,
+  confirmed shortcut to macOS's automatic-backup setting using tmutil enable/disable
+  with system authorization. Label it as a macOS setting, read back before showing
+  success, and keep unreadable state unknown. Never change it on launch, cleanup,
+  or a schedule, and never change the user's real setting as a development test.
+  Automatic cleanup requires an explicitly confirmed schedule; Time Machine
+  cleanup always stays manual.
 - Confirm manual purges in the app. Use system authorization for snapshot
   operations, never for scheduled cleanup.
 - During development, use mocks for destructive command tests. Read-only live
@@ -45,7 +50,10 @@ Build with `swift build`, test with `swift test`, package with
 `./scripts/build-app.sh`. This is a SwiftUI macOS app, not a website.
 
 Keep production and development separate. Local builds produce
-`dist/Reclaim Dev.app` with a distinct bundle ID; run it from that folder instead
+`dist/Reclaim.app`, named Reclaim just like the release; do not add a Dev suffix
+or create a second local app. The dist folder is the user's testing workflow.
+Keep a distinct internal bundle ID to prevent launch/update collisions and show
+the channel, version, build and location in About. Run local builds from dist instead
 of replacing `/Applications/Reclaim.app`. Only signed, notarized releases belong
 in Applications. Sparkle runs only in production (never previews, demo or tests),
 uses the signed release feed, and waits for storage work before restarting.
@@ -63,9 +71,17 @@ unused images, and keep build cache inspection-only. Xcode/Browser totals use
 private bytes from items safe to clean only; missing measurements stay unknown. Snapshot
 sizes remain unknown unless there are no snapshots. Filters and selection do
 not change source totals. Do not sum overlapping footprints for the headline.
-Show all discovered data by default. “Safe to clean” items always come first, with
-kept rows dimmed below a “Protected” section heading. “Safe only” is an optional
-filter that hides that lower section; ordering is automatic, not a toggle.
+The November 7 revision makes Overview an actionable list of individual items
+across sources, with checkboxes, per-item review, and a confirmed batch action.
+Overview's top figures are Recommended and All options (recommended plus review)
+reclaimable estimates. Sum only measured private file bytes across disjoint cleanup
+paths; incomplete file inventories and missing measurements stay unknown. Report
+Docker's whole-store estimate and unknown snapshot sizes separately. Keep physically
+free SSD space and macOS's available estimate smaller alongside these figures.
+Show all discovered data by default: Recommended, Review first, then dimmed
+Protected rows. “Recommended only” optionally hides the latter groups. Ordering
+is automatic. Keep physically free and available space distinct; no combined
+recovery promise. Source tabs provide details and coverage failures stay visible.
 All listed items are relevant; protection means cleanup safety could not be
 established. Keep found/safe counts visible even when the filter excludes
 every item, with a way to show protected items. Show each protection reason
@@ -75,19 +91,39 @@ the current filters. Mixed selections remove only safe items, with the safe coun
 shown before confirmation; protected rows stay inspectable. Safety checks still
 run again before removal. Changing filters or source clears the selection.
 
-Reclaim is a conservative safety net. Coding tools should own worktree and cache
-lifecycle; do not continually clear data belonging to active development. Unknown
-ownership or failed usage checks mean keep the data. Apply the same policy to
-manual and scheduled cleanup, and revalidate before removal.
+The November 7 clarification favours reclaiming old rebuildable output even when
+its source project survives. Project existence or worktree registration establishes
+ownership, not current use. Recommended items have recognised generated identity,
+at least seven days without recorded changes, and successful current-use checks.
+Review first explains extra consequences such as dependency downloads or loss of
+old diagnostics. Unknown identity, failed inspection, or detected current use stays
+Protected; review is not an override for failed checks. Do not call modification
+times “last used”: they are evidence, not a complete usage history. Sources and
+worktrees are never removed. Keep new cleanup sources manual only.
 
-Xcode cleanup may remove only Build and Index.noindex/Index inside recognized
-DerivedData projects whose source workspace AND parent folder are confirmed gone,
-not associated with any registered worktree, and inactive for at least seven days.
+Manual Xcode cleanup may remove only Build and Index.noindex/Index inside recognised
+DerivedData projects, including existing source projects, after seven days of
+inactivity and successful source/output usage checks. Scheduled Xcode cleanup stays
+orphan-only: source workspace AND parent folder gone, no registered worktree.
 Inspect direct repositories in ~/repos and ask Git for registered worktrees,
-including missing and external paths. Any surviving source or registered worktree
-is protected regardless of age. Require complete inventory, no Xcode/build tools
-running and no process/open-file references. Preserve SourcePackages, archives,
-source projects, and simulator data. Reject symlinks and volume crossings.
+including missing and external paths. Require complete inventory, no Xcode/build
+tools running and no process/open-file references. Preserve SourcePackages,
+archives, source projects, and simulator data. Reject symlink roots and volume
+crossings. Revalidate before removal; destructive tests use generated fixtures.
+
+Projects inspect only recognised Swift .build output (never checkouts/artifacts or
+all of .build), Next.js .next/cache, and root node_modules in inventoried repositories.
+Require tool identity, no Git-tracked contents, seven-day modification age, and no
+project process/open-file users. Node dependencies require a recognised lockfile and
+Review first explaining reinstall/downloads and loss of local dependency edits.
+Never follow links or delete their destinations. Reject linked cleanup roots and
+volume crossings. Recheck identity, inventory, tracked contents, age and use.
+
+AI tools inspect only known Codex/Claude log and history roots. Manual review may
+remove exact recognised diagnostic logs unchanged for 30 days and not in use.
+Conversation/session history is unique data, not rebuildable; keep it and explain
+why. Do not read transcript contents or remove databases, credentials, settings,
+skills or worktrees. Generated data in registered agent worktrees uses Projects.
 
 Docker commands must pin a local Unix socket rather than use the active context.
 Relay Docker's usage definition: both running and stopped containers count. The

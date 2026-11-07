@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 cd "$(dirname "$0")/../.."
 tools="$PWD/.build/artifacts/sparkle/Sparkle/bin"
-[[ -d 'dist/Reclaim Dev.app' ]] || { echo 'Build Reclaim Dev first.' >&2; exit 1; }
+[[ -d 'dist/Reclaim.app' ]] || { echo 'Build Reclaim first.' >&2; exit 1; }
 fixture="$(mktemp -d "$PWD/dist/update-fixture.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 mkdir "$fixture/archives"
@@ -19,7 +19,7 @@ try key.publicKey.rawRepresentation.base64EncodedString().write(to: root.appendi
 let other = Curve25519.Signing.PrivateKey()
 try other.publicKey.rawRepresentation.base64EncodedString().write(to: root.appendingPathComponent("wrong-public.txt"), atomically: true, encoding: .utf8)
 SWIFT
-ditto 'dist/Reclaim Dev.app' "$fixture/Reclaim.app"
+ditto 'dist/Reclaim.app' "$fixture/Reclaim.app"
 plist="$fixture/Reclaim.app/Contents/Info.plist"
 key="$(cat "$fixture/public.txt")"
 version="$(cat VERSION)"

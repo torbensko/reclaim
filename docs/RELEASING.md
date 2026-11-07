@@ -81,7 +81,8 @@ minimum target so newer systems use their current native control appearance.
 
 ## Development and production
 
-Build and run `dist/Reclaim Dev.app` locally. Development and CI preview builds
+Build and run `dist/Reclaim.app` locally. All channels use the name **Reclaim**;
+the dist folder and About build details identify the local copy. Local and CI preview builds
 use `local.timemachinexray.app.dev`, display their channel and build provenance,
 and never start Sparkle. They do not replace `/Applications/Reclaim.app`.
 The production app keeps its original identifier. Use the actual published

@@ -2,19 +2,9 @@ import AppKit
 import SwiftUI
 import ReclaimCore
 
-private struct SummaryRow: Identifiable {
-    let source: Source
-    let detail: String
-    let size: String
-    let status: String
-    var privateSize: String = "—"
-    var id: Source { source }
-}
-
 struct ContentView: View {
     @ObservedObject var store: ReclaimStore
     @State private var search = ""
-    @State private var overviewSelection: Source?
     @State private var action: CleanupAction?
     @State private var showSchedule = false
     @State private var showHelp = false
@@ -29,6 +19,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             storageHeader
             Divider()
+            if store.source == .timeMachine {
+                BackupSettingsView(store: store)
+                Divider()
+            }
             if let error = store.errors[store.source] {
                 unavailable(error)
             } else {
@@ -61,13 +55,16 @@ struct ContentView: View {
             }
         }
         .onChange(of: store.source) { _, _ in store.selection = []; search = "" }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await store.refreshBackupMode() }
+        }
         .onChange(of: dockerKind) { _, _ in store.selection = [] }
         .onChange(of: safeOnly) { _, _ in store.selection = [] }
         .onChange(of: search) { _, _ in store.selection = [] }
         .sheet(item: $action) { pending in
             VStack(alignment: .leading, spacing: 18) {
                 Text(pending.title).font(.title3.bold())
-                Text(pending.explanation).fixedSize(horizontal: false, vertical: true)
+                ScrollView { Text(pending.explanation).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 420)
                 HStack {
                     Spacer()
                     Button("Cancel") { action = nil }.keyboardShortcut(.cancelAction)
@@ -76,7 +73,7 @@ struct ContentView: View {
                         Task { await store.perform(pending) }
                     }.keyboardShortcut(.defaultAction)
                 }
-            }.padding(24).frame(width: 460)
+            }.padding(24).frame(width: 600)
         }
         .sheet(isPresented: $showSchedule) { ScheduleView(store: store) }
         .sheet(isPresented: $showDetails) {
@@ -106,26 +103,22 @@ struct ContentView: View {
     private var storageHeader: some View {
         HStack(alignment: .center, spacing: 24) {
             if store.source == .overview {
-                headline(freeSpace, label: "free now", detail: availableSpace)
+                overviewReclaimableHeadline
             } else {
                 reclaimableHeadline
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                if store.source != .overview {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(freeSpace).font(.title3.weight(.semibold)).monospacedDigit()
-                        Text("free on Internal SSD").font(.callout).foregroundStyle(.secondary)
-                    }
-                    Text(availableSpace).font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(freeSpace).font(.title3.weight(.semibold)).monospacedDigit()
+                    Text("free now · Internal SSD").font(.callout).foregroundStyle(.secondary)
                 }
+                Text(availableSpace).font(.caption).foregroundStyle(.secondary)
                 if store.isBusy {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text(store.busyMessage ?? "").font(.caption).foregroundStyle(.secondary)
                     }
-                } else if store.source == .overview {
-                    Label("Internal SSD", systemImage: "internaldrive").font(.callout).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
                     if store.monitoringStorage && !store.isBusy { ProgressView().controlSize(.mini) }
@@ -133,6 +126,34 @@ struct ContentView: View {
                 }.help(store.storageError ?? "Free space is measured independently of the source inventories. After cleanup, readings repeat for about a minute to catch delayed release.")
             }
         }.padding(.horizontal, 20).padding(.vertical, 16)
+    }
+
+    private var overviewReclaimableHeadline: some View {
+        let estimate = store.overviewReclaimEstimate
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 24) {
+                headline(estimate.recommendedBytes.map(formatBytes) ?? "—", label: "recommended",
+                         detail: "Reclaimable estimate · private files")
+                headline(estimate.allOptionsBytes.map(formatBytes) ?? "—", label: "all options",
+                         detail: "Recommended + review · private files")
+            }
+            Text(overviewAdditionalEstimates).font(.caption).foregroundStyle(.secondary)
+        }.help("Estimates for all eligible file data, independent of selection and filters. All options includes Recommended and Review first; Protected items are excluded. Overlapping cleanup paths are counted once. Missing private measurements or incomplete file inventories stay unknown. Docker's whole-store estimate and unknown snapshot sizes are separate, never added to private file bytes. " + privateSizeExplanation)
+    }
+
+    private var overviewAdditionalEstimates: String {
+        var parts: [String] = []
+        if store.loading.contains(.docker) { parts.append("Measuring Docker…") }
+        else if store.errors[.docker] != nil || store.docker == nil { parts.append("Docker estimate unavailable") }
+        else if let bytes = store.docker?.reclaimableImageBytes {
+            let kept = store.docker?.items.filter { $0.kind == .image && !$0.inUse && !$0.eligibility.canClean }.count ?? 0
+            let keptLabel = kept > 0 ? " (\(kept) unused kept)" : ""
+            parts.append("Docker: \(formatBytes(bytes)) whole-store estimate\(keptLabel) · separate")
+        } else { parts.append("Docker estimate unavailable") }
+        if store.loading.contains(.timeMachine) { parts.append("Checking snapshots…") }
+        else if store.errors[.timeMachine] != nil || store.report == nil { parts.append("Snapshots unavailable") }
+        else if !store.snapshots.isEmpty { parts.append("Snapshots: size unknown") }
+        return parts.joined(separator: " · ")
     }
 
     private var freeSpace: String { store.storage.map { formatBytes($0.freeBytes) } ?? "—" }
@@ -164,13 +185,13 @@ struct ContentView: View {
                          label: "reclaimable",
                          detail: store.report == nil ? "Snapshot data unavailable" : store.snapshots.isEmpty ? "No local snapshots" : "\(store.snapshots.count) local snapshots · size unavailable in Reclaim")
                     .help("This reader does not report snapshot sizes. The SSD's available-space estimate is not a snapshot measurement. Use Snapshot sizes below for Disk Utility's measurements.")
-            case .xcode, .browser:
-                let report = store.source == .xcode ? store.xcode : store.browser
+            case .xcode, .browser, .projects, .agents:
+                let report = store.localReport(for: store.source)
                 let bytes = report?.applicablePrivateBytes
                 headline(bytes.map(formatBytes) ?? "—", label: "reclaimable · private bytes",
                          detail: report.map { value in
-                             if value.candidateCount == 0 { return "None safe to clean · \(value.entries.count) found" }
-                             return "\(value.candidateCount) safe to clean · " + (bytes == nil ? "private size unavailable" : "shared blocks may free more")
+                             if value.candidateCount == 0 { return "None eligible to remove · \(value.entries.count) found" }
+                             return "\(value.recommendedCount) recommended · \(value.reviewCount) review · " + (bytes == nil ? "private size unavailable" : "shared blocks may free more")
                          } ?? "Source data unavailable")
                     .help("Private file bytes across all items safe to clean, independent of selection and filters. Protected items are excluded. " + privateSizeExplanation)
             case .docker:
@@ -191,43 +212,10 @@ struct ContentView: View {
 
     @ViewBuilder private var sourceContent: some View {
         switch store.source {
-        case .overview: overview
+        case .overview, .projects, .agents: OpportunitiesView(store: store, search: $search, recommendedOnly: $safeOnly, action: $action)
         case .timeMachine: snapshots
         case .xcode, .browser: localTable
         case .docker: dockerTable
-        }
-    }
-
-    private var rows: [SummaryRow] {
-        [
-            SummaryRow(source: .timeMachine, detail: "\(store.snapshots.count) local restore points", size: "Unavailable here", status: "Manual · restore history"),
-            SummaryRow(source: .xcode, detail: "\(store.xcode?.entries.count ?? 0) projects · build & index", size: store.xcode.map { formatBytes($0.bytes) } ?? "—", status: store.xcode.map { "\($0.candidateCount) safe · \($0.entries.count - $0.candidateCount) protected" } ?? "—", privateSize: store.xcode?.privateBytes.map(formatBytes) ?? "—"),
-            SummaryRow(source: .docker, detail: "Images / build cache", size: store.docker.map { "\(formatBytes($0.imageBytes)) / \(formatBytes($0.cacheBytes))" } ?? "—", status: store.docker.map { "\($0.candidateCount) safe · cache protected" } ?? "—"),
-            SummaryRow(source: .browser, detail: "Chrome signing copies & caches", size: store.browser.map { formatBytes($0.bytes) } ?? "—", status: store.browser.map { "\($0.candidateCount) safe · \($0.entries.count - $0.candidateCount) protected" } ?? "—", privateSize: store.browser?.privateBytes.map(formatBytes) ?? "—")
-        ]
-    }
-
-    private var overview: some View {
-        Table(rows, selection: $overviewSelection) {
-            TableColumn("Source") { row in
-                HStack(spacing: 10) {
-                    Image(systemName: row.source.symbol).foregroundStyle(.secondary).frame(width: 20)
-                    Button(row.source.rawValue) { store.source = row.source }.buttonStyle(.plain).fontWeight(.medium)
-                }.padding(.vertical, 8)
-            }.width(min: 130, ideal: 170)
-            TableColumn("Contents") { row in Text(store.loading.contains(row.source) ? "Reading…" : store.errors[row.source] == nil ? row.detail : "Unavailable").foregroundStyle(.secondary) }
-            TableColumn("Footprint¹") { row in
-                Text(store.loading.contains(row.source) ? "Measuring…" : store.errors[row.source] == nil ? row.size : "—").monospacedDigit()
-            }.width(min: 150, ideal: 180)
-            TableColumn("Private bytes²") { Text($0.privateSize).monospacedDigit().help(privateSizeExplanation) }.width(110)
-            TableColumn("Status") { row in
-                Text(store.errors[row.source] == nil ? row.status : "Open for details").foregroundStyle(.secondary)
-            }.width(min: 160, ideal: 220)
-        }
-        .contextMenu(forSelectionType: Source.self) { selected in
-            if let source = selected.first { Button("Show \(source.rawValue)") { store.source = source } }
-        } primaryAction: { selected in
-            if let source = selected.first { store.source = source }
         }
     }
 
@@ -270,7 +258,7 @@ struct ContentView: View {
     }
 
     private var eligibilityFilter: some View {
-        Toggle("Safe only", isOn: $safeOnly).toggleStyle(.checkbox)
+        Toggle("Recommended only", isOn: $safeOnly).toggleStyle(.checkbox)
             .help("Show only items that pass the current safety checks. Turn off to also see protected items and why they are kept.")
     }
 
@@ -281,7 +269,7 @@ struct ContentView: View {
     private func tableHeading(_ title: String, count: Int, eligible: Int? = nil) -> some View {
         HStack {
             Text(title).font(.headline)
-            Text(eligible.map { "\(count) found · \($0) safe" } ?? "\(count)").foregroundStyle(.secondary)
+            Text(eligible.map { "\(count) found · \($0) recommended" } ?? "\(count)").foregroundStyle(.secondary)
             Spacer()
             if eligible != nil { eligibilityFilter }
             searchField
@@ -315,9 +303,9 @@ struct ContentView: View {
                 }.width(min: 120, ideal: store.source == .xcode ? 190 : 120)
                 TableColumn("File blocks") { Text(formatBytes($0.bytes)).monospacedDigit().foregroundStyle(cleanupColor($0.eligible)).help("Allocated file blocks; APFS clones may share them with other rows. Not uniquely recoverable space.") }.width(110)
                 TableColumn("Private bytes²") { Text($0.privateBytes.map(formatBytes) ?? "—").monospacedDigit().foregroundStyle(cleanupColor($0.eligible)).help(privateSizeExplanation) }.width(100)
-                TableColumn("Last activity") { Text($0.modified.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(cleanupColor($0.eligible)) }.width(min: 140, ideal: 150)
+                TableColumn("Last changed") { Text($0.modified.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(cleanupColor($0.eligible)) }.width(min: 140, ideal: 150)
                 TableColumn("Cleanup") { item in
-                    Text(item.eligibility.label).foregroundStyle(cleanupColor(item.eligible)).lineLimit(1).help(item.eligibility.explanation)
+                    Text(item.eligibility.label).foregroundStyle(cleanupColor(item.eligible)).lineLimit(1).help(item.eligibility.explanation + "\n" + item.evidence)
                 }.width(min: 180, ideal: 230)
             } rows: {
                 cleanupRows(matchingLocal, eligible: \.eligible)
@@ -409,7 +397,7 @@ struct ContentView: View {
         let safe = items.filter { $0[keyPath: eligible] }
         let protected = items.filter { !$0[keyPath: eligible] }
         if !safe.isEmpty {
-            Section("Safe to clean · \(safe.count)") {
+            Section("Recommended · \(safe.count)") {
                 ForEach(safe) { TableRow($0) }
             }
         }
@@ -438,7 +426,7 @@ struct ContentView: View {
 
     private var visibleIDs: Set<String> {
         switch store.source {
-        case .overview: []
+        case .overview, .projects, .agents: []
         case .timeMachine: Set(store.snapshots.filter { matches($0.name) }.map(\.id))
         case .xcode, .browser: Set(matchingLocal.filter { !safeOnly || $0.eligible }.map(\.id))
         case .docker: Set(dockerItems.filter { !safeOnly || $0.eligibility.canClean }.map(\.id))
@@ -461,11 +449,11 @@ struct ContentView: View {
     @ViewBuilder private var footer: some View {
         HStack(spacing: 12) {
             switch store.source {
-            case .overview:
-                Text("¹ Shared blocks can overlap.  ² Private bytes exclude shared blocks; not a purge guarantee.").font(.caption).foregroundStyle(.secondary)
+            case .overview, .projects, .agents:
+                Text(store.source == .overview ? "Footprints can overlap. Private bytes are not guaranteed recovery. Changes are rechecked before removal." : store.localReport(for: store.source)?.notice ?? "Reading source…")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
                 Button(store.scheduleLabel + "…") { showSchedule = true }
-                Button("Show Source") { if let overviewSelection { store.source = overviewSelection } }.disabled(overviewSelection == nil)
             case .timeMachine:
                 selectAll
                 Text("\(store.selection.count) selected").font(.caption).foregroundStyle(.secondary)
@@ -480,10 +468,10 @@ struct ContentView: View {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)]) }
                 }
                 Spacer()
-                Text(store.source == .xcode ? "Existing repositories and worktrees are protected." : "24-hour minimum · process and open-file checks")
+                Text(store.source == .xcode ? "Sources stay · 7-day age and usage checks" : "24-hour minimum · process and open-file checks")
                     .font(.caption).foregroundStyle(.secondary)
-                Button(store.source == .xcode ? "Clear Safe Items…" : "Remove Safe Copies…") {
-                    action = store.source == .xcode ? .xcode(eligibleLocal.map(\.id)) : .chrome(eligibleLocal.map(\.id))
+                Button(store.source == .xcode ? "Remove selected…" : "Remove selected…") {
+                    action = store.cleanupPlan(for: store.opportunities.filter { $0.source == store.source && store.selection.contains($0.itemID) })
                 }.disabled(!store.canAct || eligibleLocal.isEmpty)
                     .help("Only selected items that pass the safety checks are removed. Protected items remain untouched.")
             case .docker:
@@ -492,7 +480,7 @@ struct ContentView: View {
                 Spacer()
                 if dockerKind == .image {
                     Text("Shared layers mean image sizes cannot be added together.").font(.caption).foregroundStyle(.secondary)
-                    Button("Remove Safe Images…") { action = .images(selectedImages) }
+                    Button("Remove selected…") { action = store.cleanupPlan(for: store.opportunities.filter { $0.source == .docker && selectedImages.contains($0.itemID) }) }
                         .disabled(!store.canAct || selectedImages.isEmpty)
                         .help("Only selected images that pass the safety checks are removed. Protected images remain untouched.")
                 } else {
@@ -543,9 +531,9 @@ struct ContentView: View {
             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             Text("Build tools can stop when physically free space is low, even when Finder reports plenty available. Reclaim shows free APFS container space separately from macOS’s estimate, which includes reclaimable data.")
             Text("File footprints can share blocks. Private bytes come from macOS and exclude blocks retained by other clones or snapshots; unknown values stay blank. Private-byte sums exclude directory metadata and can underestimate group cleanup. Docker's unique/shared layer sizes are shown separately. None is a guaranteed purge result.")
-            Text("Reclaim is a safety net. Existing repositories and worktrees are protected, and uncertain usage keeps the data. Project tools remain responsible for their own worktree and cache lifecycle. Schedules apply the same checks as manual cleanup.")
+            Text("Reclaim recognises generated data in specific tools and projects. Old rebuildable output can be removed while sources and worktrees stay. Review first explains downloads or lost diagnostic history. Current use and failed checks keep the data. Modification dates are not a complete last-use history. Schedules retain the narrower orphan-only Xcode policy; new sources are manual only.")
             Button("Time Machine Settings") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Time-Machine-Settings.extension")!)
+                BackupSettingsView.openSystemSettings()
             }
         }.font(.callout).padding(20).frame(width: 380)
     }

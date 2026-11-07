@@ -21,10 +21,9 @@ build_channel=Development
 if [[ "${GITHUB_ACTIONS:-false}" == true ]]; then build_channel=Preview; fi
 if [[ "${RECLAIM_PREVIEW:-0}" == 1 ]]; then build_channel=Preview; fi
 if [[ "${DISTRIBUTION:-0}" == 1 ]]; then build_channel=Release; fi
-app_name='Reclaim Dev'
+app_name=Reclaim
 bundle_id='local.timemachinexray.app.dev'
 if [[ "$build_channel" == Release ]]; then
-    app_name=Reclaim
     bundle_id='local.timemachinexray.app'
 fi
 source_revision="$(git rev-parse --verify HEAD)"

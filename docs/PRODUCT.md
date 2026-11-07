@@ -63,9 +63,17 @@ change with its limits, not a guaranteed per-source recovery amount.
 The October 21 revision renames the app **Reclaim** and broadens it to an
 opinionated developer-storage utility. The user wants specific known culprits,
 not a disk scanner looking for arbitrary large files. Start with Overview and
-provide Time Machine, Xcode, Docker and Browser tabs in the toolbar, following
-Activity Monitor's native table-based layout. Overview leads with physically free
-space, with the available estimate secondary. Each source page leads with a large
+provide Projects, Xcode, Docker, AI tools, Browser and Time Machine tabs in the toolbar, following
+Activity Monitor's native table-based layout. The November 7 headline correction
+makes Overview lead with **Recommended** and **All options** reclaimable estimates.
+All options includes recommended and review items, never protected data. Use private
+file bytes from complete source inventories, count overlapping cleanup paths once,
+and leave missing measurements unknown. Keep Docker's whole-store image estimate
+and unknown snapshot sizes visibly separate; never add their footprints to file
+bytes. The figures describe the whole inventory, independent of filters/selection.
+Physically free SSD space and macOS's available estimate remain alongside, smaller
+and separately labelled; do not claim the latter is an exact Finder reading.
+Each source page leads with a large
 reclaimable-space figure above its table, keeping SSD free/available space alongside
 it. The current internal drive needs only a small label; no sidebar or dashboard cards.
 
@@ -74,7 +82,7 @@ filters. Docker promotes its own whole-store estimate as **potentially reclaimab
 explicitly identifying unused images kept by Reclaim. Switching to Build cache
 shows Docker's cache estimate with **inspection-only** next to it. Neither figure
 is a total for safe or selected rows. Xcode and Browser show private bytes
-from items safe to clean only, with shared-block recovery potentially additional.
+from eligible items only (recommended and review), with shared-block recovery potentially additional.
 If any safe item's private size is unknown, the headline stays unknown;
 unmeasured kept items do not affect it. No safe items means zero. Time Machine
 shows an unknown size while snapshots exist and zero only for a confirmed empty
@@ -100,47 +108,58 @@ you will recover” total: APFS copies, snapshots and Docker layers share blocks
 
 ## Known cleanup sources
 
-The October 21 safety policy makes Reclaim a **safety net**, not a recurring cache
-eraser. The user wants coding tools to own worktree and build-folder lifecycle.
-Protect active development even if this leaves substantial storage in place.
-Age alone does not prove abandonment. Uncertain ownership or failed process/file
-inspection means keep the data. Apply identical eligibility rules to manual and
-scheduled cleanup and recheck before deleting. Show all discovered data by
-default, grouped into **Safe to clean** followed by **Protected**. These are all
-relevant storage items; the distinction is cleanup safety, not applicability.
-“Safe” means the current checks passed; the same checks run again before removal.
-Ordering is automatic, with largest items first within each group; there is no
-sorting toggle. Keep protected rows dimmed with readable protection reasons.
-The **Safe only** filter hides the protected group and is off by default.
-Found/safe counts still describe the full inventory when filters are on.
-If no safe items remain, state how many were found and offer to show the
-protected items, rather than suggesting the inventory is empty. Text search
-matches paths and reasons as well as names. Mixed selections act only on
-safe items, with the safe count visible before confirmation. Protected
-rows remain selectable for inspection and Finder actions. Each source page has
-a **Select all** checkbox beside its selection count. It selects/deselects all
-rows shown by the current search and Safe only filters, never hidden rows or
-section headings. Removal still includes only safe selected items and requires
-confirmation. Changing filters or source clears the selection.
+The November 7 clarification broadens manual cleanup to old, recognised rebuildable
+output in surviving projects. This app is tailored to the user's tools. Rebuilding
+is an acceptable cost; interrupting active work or losing source/history is not.
+An existing repository or registered worktree establishes ownership and must not
+alone block removal of its old generated output. Unknown identity or failed usage
+checks still protect data. Modification times and Xcode access metadata are evidence,
+not a complete last-use history. Never label a modification timestamp “last used”.
 
-The user explicitly asked to cross-check project folders rather than infer
-activity from an app being open. Xcode already resolves each DerivedData entry's
-source workspace against `~/repos` and Git's registered worktrees. Show the
-source path directly, allow revealing it in Finder, and distinguish a registered
-worktree/ownership safeguard from evidence of a process actually using data.
-A registered worktree may have a missing directory; do not label registration
-as proof that the folder exists. Docker's current unused status is engine
-evidence; Reclaim does not yet associate its cache records with project folders.
+Overview is the primary cleanup list, with individual items across sources,
+checkboxes, Select all (visible rows only), Select recommended, per-item Review,
+and Remove selected. Show Recommended, Review first, then Protected groups. The
+optional Recommended only filter hides review and protected groups. Found and
+category counts describe the full inventory, independent of filters. Search matches
+names, paths and reasons. Filter/source changes clear selection. Protected rows stay
+inspectable; mixed selections remove only eligible items. Confirm exact paths,
+consequences, review items and Docker tags before removal. Revalidate every item,
+stop on failed checks, and report partial outcomes. Time Machine appears as a separate
+review decision: restore history cannot be rebuilt; request thinning, never invent
+snapshot sizes. Empty/unavailable sources and unfinished scans remain distinguishable.
 
-- **Xcode:** Build, Index.noindex and Index inside recognized DerivedData projects.
+Recommended means recognised generated identity, sufficient age and successful
+current-use checks, not a guarantee. Review first covers extra consequences such as
+dependency downloads and lost troubleshooting records; it never overrides detected
+use or failed checks. Keep sources, worktrees, settings, credentials and unique
+conversation history. New sources are manual-only. Scheduled Xcode retains the
+narrower orphan-only ownership policy while sharing age and usage safeguards.
+
+- **Projects:** Inspect direct repositories in `~/repos` and Git's registered
+  worktrees, including Codex/Claude worktrees. Recognise Swift `.build/out` through
+  its manifest/workspace-state and Products/Intermediates layout, plus older macOS
+  target-triple debug/release folders. Never offer all of `.build`, dependency
+  checkouts, repositories or downloaded artifacts. Recognise `.next/cache` only
+  with a Next.js package manifest. Root `node_modules` requires a package manifest
+  and recognised lockfile and is always Review first: reinstall may need downloads,
+  credentials and scripts; local edits inside dependencies would be lost. All need
+  seven days without contained modifications, no Git-tracked contents, complete
+  repository inventory and no current project process/open-file users. Revalidate
+  before removal; reject linked roots and volume crossings and never follow links.
+- **AI tools:** Inspect exact Codex `~/.codex/log` and Claude `~/.claude/debug` roots
+  for recognised diagnostic filenames. Logs unchanged for 30 days and not in use
+  can be manually reviewed; removing them loses old troubleshooting evidence.
+  Show Codex sessions/archived sessions and Claude project session data as Protected
+  because unique history cannot be rebuilt. No transcript contents are read.
+  Databases, settings, credentials and source worktrees are never cleanup targets.
+  Registered agent worktree build/dependency artifacts appear under Projects.
+- **Xcode:** Manual cleanup can remove Build, Index.noindex and Index from recognised
+  DerivedData projects whose sources still exist. Require complete inventory,
+  seven days of inactivity, no Xcode/build tools, and successful source/output
+  process and open-file inspection. Recheck identity, age and usage before removal.
   Preserve SourcePackages, logs, archives, simulators and source projects. The
-  source workspace and parent folder must be confirmed gone. Inspect direct
-  repositories in `~/repos` and Git's registered worktrees (including external,
-  missing and locked paths). Protect every surviving source or registered
-  worktree regardless of age. Require complete inventory, seven days of inactivity,
-  no Xcode/build processes, and no open-file users. Last activity includes contained
-  file modification times and Xcode's project-access metadata. Recheck ownership,
-  activity and usage before removal.
+  scheduled policy still requires source workspace AND parent folder confirmed
+  gone and no registered worktree, including missing/external registrations.
 - **Docker:** Pin the local Unix socket. The October 22 correction makes old,
   unused tagged images available for manual cleanup, matching the type of images
   shown in Docker Desktop's unused-image list. Tags alone do not establish use.
@@ -200,7 +219,7 @@ older than 12 hours. They want Reclaim to own this responsibility. Scheduling is
 an app feature, not a Codex reminder. It is disabled by default and enabled only
 through confirmed schedule settings. Offer hourly, six-hourly and daily checks:
 Chrome copies older than 24 hours and verified orphaned Xcode generated data
-inactive for seven days, with the same ownership and usage checks as manual work.
+inactive for seven days, with the same usage checks as manual work; scheduled Xcode keeps the stricter orphan-only ownership policy.
 Build cache cannot be scheduled. If an older configuration requests Docker cache
 cleanup, record that it was kept and never run a prune. Skip busy or unverifiable sources.
 Time Machine remains manual; do not install a privileged background service.
@@ -219,8 +238,11 @@ Disabling Reclaim's job must not silently restart the old service.
 
 The user wants to use the published app as another user would, from Applications,
 while testing development builds separately from the project build folder.
-Reclaim Dev has a distinct name and bundle identity and cannot self-update or
-replace production. Both inspect real storage and use the same cleanup lock.
+The October 26 correction keeps the app named **Reclaim** everywhere. Local builds
+go to **dist/Reclaim.app**; do not introduce a Dev suffix or another local app.
+The folder is the user's testing workflow. Local builds retain a distinct internal
+bundle identity and cannot self-update or replace production. Both inspect real
+storage and use the same cleanup lock.
 Provide an easy menu shortcut back to the app in Applications. About identifies
 the channel, version, build, revision and build date so copies are distinguishable.
 
@@ -249,7 +271,49 @@ says it targets matching timestamps on all mounted disks.
 The UI confirms manual destructive actions. Snapshot operations then invoke
 macOS's authorization dialog. It never reads, stores, or logs the user's administrator password.
 Only the explicitly configured user-level schedule may run automatically.
-No privileged daemon, launch-time purge, or backup-setting change is allowed.
+No privileged daemon or launch-time purge is allowed. Backup-setting changes
+are limited to the explicit shortcut described below; cleanup and schedules
+never change backup settings.
+
+### Time Machine backup mode
+
+The October 26 request addresses recurring disruption from hourly local history.
+The user is happy to back up the files present when the backup drive is connected,
+and prefers manual Time Machine backups over ongoing snapshots between backups.
+Reclaim should make the current mode visible and highlight when manual mode is
+off. This is a shortcut to **macOS's setting**, not a separate Reclaim scheduler.
+
+Show a compact status strip on the Time Machine page, even when snapshot inspection
+is unavailable. Indicate automatic mode with a restrained amber treatment; manual
+mode reminds the user to connect the backup disk and choose **Back Up Now**.
+The Time Machine page reports the observed backup mode. Provide **System Settings…**
+and a **Manual backups** switch. Switching it requires confirmation explaining
+the system-wide change, then macOS administrator authorization. Both turning
+automatic backups off and turning them back on use only supported `tmutil disable`
+and `tmutil enable`. No destination is enumerated or altered and no backup is
+started. Enabling does not choose or promise a particular automatic frequency;
+the user can review frequency in System Settings.
+
+Read only `AutoBackup` from the system Time Machine preferences through `defaults`;
+never write the preference file. This read mechanism is not a stable public API,
+so missing, denied or unfamiliar output stays **unknown**, with a Settings fallback
+and no enabled switch. Refresh on launch, normal refresh, and returning to the app.
+Recheck immediately before changing, allow brief readback delay, and never show
+an optimistic switch state or claim success without verification. Cancellation
+and failure also reread the setting. Reject late readings from older requests.
+Setting changes share the cleanup lock and busy state so cleanup, scheduling
+changes and updater restarts cannot overlap them within the app.
+
+Manual mode stops automatic backup protection and routine hourly local snapshots.
+Existing local restore points may be removed by macOS after several minutes;
+macOS update snapshots may still exist. Existing external backups are kept.
+Connecting the disk alone does not trigger a manual backup. Do not describe manual
+mode as a snapshot-size cap, a guarantee of no snapshots or instant free space.
+Rescan sources and repeat independent storage measurements after every setting
+change outcome, as after cleanup, without attributing all observed change to it.
+Never change this setting automatically, as part of cleanup or a schedule, or
+against the user's real Mac during development tests. Use mocked commands and
+readback states for all change tests.
 
 ## What we cannot promise
 
@@ -267,12 +331,14 @@ No privileged daemon, launch-time purge, or backup-setting change is allowed.
 Apple's Disk Utility can list and delete APFS snapshots via **View → Show APFS
 Snapshots**. Apple also documents temporarily switching Time Machine's backup
 frequency to manual to allow local snapshots to be removed, then restoring
-automatic backups. The app adds a focused view for the build-space problem and
-an explicit reclamation request without changing the backup schedule.
+automatic backups. Reclaim offers a separate, confirmed shortcut to that setting;
+its reclamation actions never change the backup schedule.
 
 References:
 
 - [Apple: About Time Machine local snapshots](https://support.apple.com/en-au/102154)
+- [Apple: Time Machine settings](https://support.apple.com/en-au/guide/mac-help/mh14037/mac)
+- [Apple: About local snapshots on Mac](https://support.apple.com/en-au/guide/mac-help/mh35933/mac)
 - [Apple: View APFS snapshots in Disk Utility](https://support.apple.com/en-au/guide/disk-utility/dskuf82354dc/mac)
 - The installed macOS `man tmutil` and `man diskutil` documents define the
   commands used by the implementation.

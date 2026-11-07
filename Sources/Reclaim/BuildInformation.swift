@@ -7,7 +7,7 @@ struct BuildInformation {
     private let bundle = Bundle.main
     var version: String { value("CFBundleShortVersionString") ?? "Unpackaged" }
     var number: String { value("CFBundleVersion") ?? "—" }
-    var name: String { value("CFBundleDisplayName") ?? "Reclaim Dev" }
+    var name: String { value("CFBundleDisplayName") ?? "Reclaim" }
     var channel: String { value("ReclaimBuildChannel") ?? "Unidentified build" }
     var title: String { "\(name) \(version) · \(channel)" }
     var source: String {

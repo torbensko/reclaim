@@ -40,9 +40,13 @@ private func fixtures(read: @escaping @Sendable () async throws -> StorageInfo) 
     // Deliberately stale report storage must never overwrite fresh independent readings.
     services.snapshots = { SnapshotReport(snapshots: [], storage: space(1)) }
     services.xcode = { LocalReport(entries: [], notice: nil) }
+    services.projects = { LocalReport(entries: [], notice: nil) }
+    services.agents = { LocalReport(entries: [], notice: nil) }
     services.browser = { LocalReport(entries: [], notice: nil) }
     services.docker = { DockerReport(items: [], imageBytes: 0, cacheBytes: 0, reclaimableCacheBytes: 0, reclaimableImageBytes: 0) }
     services.schedule = { throw CleanupError.unavailable("No fixture schedule") }
+    services.backupMode = { .manual }
+    services.setBackupMode = { _ in throw CleanupError.unavailable("Unexpected setting change") }
     services.perform = { _ in "Mock cleanup complete" }
     services.pause = { _ in try Task.checkCancellation() }
     return services

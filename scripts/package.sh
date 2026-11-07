@@ -15,7 +15,6 @@ else
 fi
 ./scripts/build-app.sh --universal
 app_name=Reclaim
-if [[ "$mode" == --unsigned ]]; then app_name='Reclaim Dev'; fi
 app="$PWD/dist/$app_name.app"
 for binary in "$app/Contents/MacOS/Reclaim" "$app/Contents/Helpers/ReclaimWorker"; do
     for architecture in arm64 x86_64; do

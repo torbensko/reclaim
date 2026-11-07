@@ -3,13 +3,20 @@ import Darwin
 
 public enum CleanupEligibility: Hashable, Sendable {
     case candidate
+    case review(String)
     case protected(String)
     case unknown(String)
     case inspectOnly
-    public var canClean: Bool { if case .candidate = self { true } else { false } }
+    public var canClean: Bool {
+        switch self { case .candidate, .review: true; default: false }
+    }
+    public var isRecommended: Bool { if case .candidate = self { true } else { false } }
+    public var needsReview: Bool { if case .review = self { true } else { false } }
+    public var group: Int { isRecommended ? 0 : needsReview ? 1 : 2 }
     public var label: String {
         switch self {
-        case .candidate: "Safe to clean"
+        case .candidate: "Recommended"
+        case .review: "Review first"
         case let .protected(reason): reason
         case .unknown: "Unverified — kept"
         case .inspectOnly: "Inspect only"
@@ -18,6 +25,7 @@ public enum CleanupEligibility: Hashable, Sendable {
     public var explanation: String {
         switch self {
         case .candidate: "Passed the current checks. Ownership, age and usage are checked again before removal."
+        case let .review(reason): reason
         case let .protected(reason): reason
         case let .unknown(reason): "Protected because cleanup safety could not be verified: \(reason)"
         case .inspectOnly: "Reclaim does not delete this data."

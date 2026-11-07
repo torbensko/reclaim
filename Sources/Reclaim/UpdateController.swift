@@ -89,7 +89,7 @@ struct UpdateCommands: Commands {
                 Toggle("Automatically Check for Updates", isOn: Binding(
                     get: { updates.automaticChecks }, set: { updates.setAutomaticChecks($0) }))
             } else {
-                Button("Updates Disabled in Development Builds") {}.disabled(true)
+                Button("Updates Unavailable for This Local Build") {}.disabled(true)
                 Button("Open Reclaim in Applications") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Reclaim.app"))
                 }.disabled(!FileManager.default.fileExists(atPath: "/Applications/Reclaim.app"))

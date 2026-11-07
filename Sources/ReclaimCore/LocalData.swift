@@ -20,7 +20,11 @@ public enum CleanupError: LocalizedError, Sendable {
 }
 
 public struct LocalEntry: Identifiable, Hashable, Sendable {
-    public enum Kind: String, Sendable { case xcode = "Build & index", chromeClone = "Signing copy", chromeCache = "Browser cache" }
+    public enum Kind: String, Sendable {
+        case xcode = "Build & index", chromeClone = "Signing copy", chromeCache = "Browser cache"
+        case swiftBuild = "Swift build output", nodeDependencies = "Node dependencies", nextCache = "Next.js cache"
+        case agentLog = "Diagnostic log", agentHistory = "Conversation history"
+    }
     public let id: String
     public let name: String
     public let path: String
@@ -30,24 +34,32 @@ public struct LocalEntry: Identifiable, Hashable, Sendable {
     public let kind: Kind
     public let eligibility: CleanupEligibility
     public let ownerPath: String?
+    public let evidence: String
+    public let footprintKnown: Bool
     public var eligible: Bool { eligibility.canClean }
 
     public init(id: String, name: String, path: String, bytes: Int64, modified: Date, kind: Kind,
-                eligibility: CleanupEligibility = .unknown("Not checked"), ownerPath: String? = nil, privateBytes: Int64? = nil) {
+                eligibility: CleanupEligibility = .unknown("Not checked"), ownerPath: String? = nil, privateBytes: Int64? = nil,
+                evidence: String = "", footprintKnown: Bool = true) {
         self.id = id; self.name = name; self.path = path; self.bytes = bytes; self.modified = modified
         self.kind = kind; self.eligibility = eligibility; self.ownerPath = ownerPath
         self.privateBytes = privateBytes
+        self.evidence = evidence
+        self.footprintKnown = footprintKnown
     }
     public func assessed(_ eligibility: CleanupEligibility) -> LocalEntry {
-        LocalEntry(id: id, name: name, path: path, bytes: bytes, modified: modified, kind: kind, eligibility: eligibility, ownerPath: ownerPath, privateBytes: privateBytes)
+        LocalEntry(id: id, name: name, path: path, bytes: bytes, modified: modified, kind: kind, eligibility: eligibility, ownerPath: ownerPath, privateBytes: privateBytes, evidence: evidence, footprintKnown: footprintKnown)
     }
 }
 
 public struct LocalReport: Sendable {
     public let entries: [LocalEntry]
     public let notice: String?
+    public init(entries: [LocalEntry], notice: String?) { self.entries = entries; self.notice = notice }
     public var bytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
     public var candidateCount: Int { entries.filter(\.eligible).count }
+    public var recommendedCount: Int { entries.filter { $0.eligibility.isRecommended }.count }
+    public var reviewCount: Int { entries.filter { $0.eligibility.needsReview }.count }
     public var privateBytes: Int64? {
         guard entries.allSatisfy({ $0.privateBytes != nil }) else { return nil }
         return entries.reduce(0) { $0 + ($1.privateBytes ?? 0) }
@@ -207,17 +219,32 @@ public enum LocalFiles {
 }
 
 public struct XcodeService: Sendable {
+    public enum Policy: Sendable { case orphanedOnly, manual }
     public let root: URL
     private let usage: any UsageInspecting
     private let repositories: any RepositoriesInspecting
+    private let policy: Policy
     public static let generatedFolders = ["Build", "Index.noindex", "Index"]
 
     public init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/Xcode/DerivedData"),
                 runner: any CommandRunning = ProcessRunner(), usage: (any UsageInspecting)? = nil,
-                repositories: (any RepositoriesInspecting)? = nil) {
+                repositories: (any RepositoriesInspecting)? = nil, policy: Policy = .orphanedOnly) {
         self.root = root.standardizedFileURL
         self.usage = usage ?? UsageInspector(runner: runner)
         self.repositories = repositories ?? RepositoryInspector(runner: runner)
+        self.policy = policy
+    }
+
+    private func ownership(workspace: URL, inventory: RepositoryInventory) -> CleanupEligibility? {
+        if policy == .orphanedOnly { return XcodePolicy.ownership(workspace: workspace, inventory: inventory) }
+        guard inventory.complete else { return .unknown("Repository/worktree inventory is incomplete.") }
+        guard workspace.standardizedFileURL.path == workspace.resolvingSymlinksInPath().path else {
+            return .protected("Source path contains a symbolic link")
+        }
+        // Existing projects are an identity, not proof that their old output is active.
+        let original = XcodePolicy.ownership(workspace: workspace, inventory: inventory)
+        if case .unknown = original { return original }
+        return nil
     }
 
     public func load(now: Date = .now) async throws -> LocalReport {
@@ -244,7 +271,8 @@ public struct XcodeService: Sendable {
                 guard bytes > 0 else { continue }
                 entries.append(LocalEntry(id: project.lastPathComponent,
                     name: URL(fileURLWithPath: workspace).deletingPathExtension().lastPathComponent,
-                    path: project.path, bytes: bytes, modified: latest, kind: .xcode, ownerPath: workspace, privateBytes: privateBytes))
+                    path: project.path, bytes: bytes, modified: latest, kind: .xcode, ownerPath: workspace, privateBytes: privateBytes,
+                    evidence: "Only Build, Index.noindex and Index. Last activity uses contained modification times and Xcode project-access metadata. Rebuilding and indexing may take longer; source packages and source files stay."))
             }
             return entries
         }.value
@@ -253,16 +281,24 @@ public struct XcodeService: Sendable {
         for entry in entries {
             let workspace = URL(fileURLWithPath: entry.ownerPath!)
             let decision: CleanupEligibility
-            if let ownership = XcodePolicy.ownership(workspace: workspace, inventory: owners) { decision = ownership }
+            if let ownership = ownership(workspace: workspace, inventory: owners) { decision = ownership }
             else if now.timeIntervalSince(entry.modified) < XcodePolicy.minimumAge { decision = .protected("Used within 7 days") }
             else {
                 let evidence = await usage.inspect(URL(fileURLWithPath: entry.path))
-                decision = evidence.buildToolsRunning ? .protected("Build tools running") : evidence.eligibility(for: URL(fileURLWithPath: entry.path))
+                if evidence.buildToolsRunning { decision = .protected("Build tools running") }
+                else if !evidence.eligibility(for: URL(fileURLWithPath: entry.path)).canClean {
+                    decision = evidence.eligibility(for: URL(fileURLWithPath: entry.path))
+                } else if policy == .manual, FileManager.default.fileExists(atPath: workspace.deletingLastPathComponent().path) {
+                    let sourceUsage = await usage.inspect(workspace.deletingLastPathComponent())
+                    decision = sourceUsage.buildToolsRunning ? .protected("Build tools running") : sourceUsage.eligibility(for: workspace.deletingLastPathComponent())
+                } else { decision = .candidate }
             }
             assessed.append(entry.assessed(decision))
         }
         return LocalReport(entries: assessed.sorted { $0.bytes > $1.bytes },
-                           notice: "Existing source folders and registered worktrees are protected, regardless of age. Only verified orphaned build data older than 7 days is eligible.")
+                           notice: policy == .manual
+                           ? "Generated build/index data unchanged for 7 days can be removed after source and output usage checks. Modification dates are evidence, not a complete usage history. Sources, packages and worktrees stay."
+                           : "Scheduled cleanup removes only verified orphaned build data older than 7 days.")
     }
 
     public func clean(ids: [String], inactiveBefore: Date? = nil, now: Date = .now) async throws -> String {
@@ -276,12 +312,17 @@ public struct XcodeService: Sendable {
         for entry in selected {
             let owners = await repositories.inventory()
             guard let owner = entry.ownerPath,
-                  XcodePolicy.ownership(workspace: URL(fileURLWithPath: owner), inventory: owners) == nil else { throw CleanupError.stale }
+                  ownership(workspace: URL(fileURLWithPath: owner), inventory: owners) == nil else { throw CleanupError.stale }
             let project = URL(fileURLWithPath: entry.path)
             let evidence = await usage.inspect(project)
             guard !evidence.buildToolsRunning, evidence.eligibility(for: project).canClean else { throw CleanupError.stale }
+            let source = URL(fileURLWithPath: owner).deletingLastPathComponent()
+            if policy == .manual, FileManager.default.fileExists(atPath: source.path) {
+                let sourceUsage = await usage.inspect(source)
+                guard !sourceUsage.buildToolsRunning, sourceUsage.eligibility(for: source).canClean else { throw CleanupError.stale }
+            }
             let freshOwners = await repositories.inventory()
-            guard XcodePolicy.ownership(workspace: URL(fileURLWithPath: owner), inventory: freshOwners) == nil else { throw CleanupError.stale }
+            guard ownership(workspace: URL(fileURLWithPath: owner), inventory: freshOwners) == nil else { throw CleanupError.stale }
             try await Task.detached {
                 try LocalFiles.validate(project, within: root)
                 let info = try LocalFiles.plist(project.appendingPathComponent("info.plist"))
@@ -296,7 +337,7 @@ public struct XcodeService: Sendable {
                 for folder in folders { try LocalFiles.removeGeneratedDirectory(folder, within: root) }
             }.value
         }
-        return "Removed orphaned build and index data for \(selected.count) projects. Source packages, archives, logs and source projects were preserved."
+        return "Removed build and index data for \(selected.count) projects. Source packages, archives, logs and source projects were preserved."
     }
 }
 

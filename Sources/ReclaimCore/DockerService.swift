@@ -33,6 +33,10 @@ public struct DockerReport: Sendable {
     public let cacheBytes: Int64
     public let reclaimableCacheBytes: Int64
     public let reclaimableImageBytes: Int64?
+    public init(items: [DockerItem], imageBytes: Int64, cacheBytes: Int64, reclaimableCacheBytes: Int64, reclaimableImageBytes: Int64?) {
+        self.items = items; self.imageBytes = imageBytes; self.cacheBytes = cacheBytes
+        self.reclaimableCacheBytes = reclaimableCacheBytes; self.reclaimableImageBytes = reclaimableImageBytes
+    }
     public var candidateCount: Int { items.filter { $0.eligibility.canClean }.count }
 }
 

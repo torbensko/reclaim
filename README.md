@@ -13,10 +13,11 @@ before macOS releases purgeable storage. Reclaim makes physically free space
 visible and offers explicit cleanup of specific sources, without a broad disk
 scan. Not every supported cache is classified as purgeable by macOS.
 
-Reclaim is a **conservative safety net**. Project tools should manage their own
-worktrees and build caches. Surviving source projects and registered worktrees
-are protected; uncertain ownership or usage keeps the data. It is expected that
-a large footprint can have no cleanup candidates.
+Reclaim suggests old, recognised rebuildable artifacts while protecting active
+work and source files. Existing projects can have disposable build output.
+**Recommended**, **Review first** and **Protected** distinguish checks that passed,
+extra consequences such as dependency downloads, and data that stays. Failed
+identity or usage checks never become a manual override.
 
 The [product brief](docs/PRODUCT.md) records this motivation, scope and design
 choices. [Development instructions](AGENTS.md) preserve them for future work.
@@ -41,11 +42,12 @@ dependency used for production updates.
 ```sh
 swift test
 ./scripts/build-app.sh
-open "dist/Reclaim Dev.app"
+open "dist/Reclaim.app"
 ```
 
-Keep the published **Reclaim** in `/Applications`, and test **Reclaim Dev** from
-the project's `dist` folder. Development builds have a separate bundle identity,
+Keep the published **Reclaim** in `/Applications`, and test **Reclaim** from
+the project's `dist/Reclaim.app`. The app keeps the same name in both places.
+Local builds have a separate internal bundle identity,
 never check for updates, and never overwrite the installed production app.
 Their app menu includes **Open Reclaim in Applications** to switch back easily.
 The app name, About panel and information panel identify the version, build
@@ -84,8 +86,14 @@ increment an ignored counter in `dist`; their numbers are separate from releases
 
 ## Interface
 
-Overview summarizes the known sources. The toolbar tabs open native tables for
-Time Machine, Xcode, Docker and browser data. There is no navigation sidebar.
+Overview lists individual cleanup opportunities across sources, with checkboxes,
+per-item review and a confirmed batch action. The toolbar tabs open native tables
+for Projects, Xcode, Docker, AI tools, Browser and Time Machine. There is no navigation sidebar.
+Overview leads with **Recommended** and **All options** reclaimable estimates from
+measured private file bytes. All options includes items marked Review first.
+Overlapping paths are counted once; missing measurements stay unknown. Docker's
+whole-store estimate and snapshot sizes remain separate. Smaller figures alongside
+show physically free space and macOS's available-space estimate.
 **Free now** is unallocated APFS container space; **available** is macOS's
 estimate for important usage and includes potentially reclaimable data. It may
 differ from Finder. Shared blocks mean the source sizes cannot be added together
@@ -105,17 +113,25 @@ The result reports the observed change, which can include other disk activity;
 it does not claim that all of the change came from cleanup. Purge controls stay
 disabled while the full inventory refresh is running, with the reason in help.
 
-All discovered items are shown by default. **Safe to clean** items always come
-first, followed by dimmed rows under **Protected**. The optional
-**Safe only** filter hides that lower group. Found/safe counts remain
-visible, and filtered empty states explain what was found and let you show it.
-Text search also matches source paths and cleanup reasons. The Xcode table shows
-the source workspace cross-checked against repositories and registered worktrees;
-right-click to reveal it in Finder. A project match explains ownership protection,
-not necessarily active use. **Select all** selects the rows shown by the current
-filters. Mixed selections remove only safe items after confirmation; protected
-items remain inspectable. “Safe” means the current checks passed, and those checks
-run again before removal.
+All discovered items are shown by default: **Recommended**, **Review first**, then
+**Protected**. The optional **Recommended only** filter hides the latter groups.
+Found/category counts stay visible. **Select all** operates on visible rows;
+**Select recommended** offers a quick starting point in Overview. Mixed selections
+remove only eligible items after a confirmation listing their paths and consequences.
+Changing source or filters clears selection. Current-use and identity checks run
+again before each removal. Last changed means modification time, not proven last use.
+
+Projects recognises Swift generated output, Next.js caches and lockfile-backed root
+Node dependency installs in direct repositories and registered worktrees, including
+Codex/Claude worktrees. The minimum modification age is seven days. Git-tracked
+contents, current project users and incomplete checks protect data. Dependency
+installs require review because reinstalling can need downloads/credentials and
+local dependency edits would be lost. Sources and worktree directories stay.
+
+AI tools separates Codex/Claude diagnostic logs from conversation history. Recognised
+logs unchanged for 30 days can be reviewed after usage checks. Conversations and
+session data are shown as protected: they cannot be rebuilt. No transcript contents
+are read. New sources are manual-only.
 
 The unified toolbar uses native Liquid Glass action groups and a centered AppKit
 segmented source control, following Activity Monitor. AppKit sizes the tab
@@ -127,7 +143,9 @@ current control styling.
 | Source | Inspection and manual cleanup | Automatic rule |
 | --- | --- | --- |
 | Time Machine | Internal Data volume only; ask macOS to thin by a GB target or delete selected restore points | Manual only; requires system authorization |
-| Xcode | Build and Index folders from verified orphaned DerivedData projects only | Sources gone, no registered worktree, inactive for 7 days, no build tools or file users |
+| Xcode | Old Build/Index output, including existing projects, after source/output usage checks | Orphan-only: sources gone, no registered worktree, inactive for 7 days, no build tools or file users |
+| Projects | Swift output, Next.js cache and reviewed Node dependencies; seven-day age and project usage checks | Manual only |
+| AI tools | Review recognised diagnostic logs older than 30 days; preserve conversation history | Manual only |
 | Docker | Relay engine usage and unique/shared sizes; remove unused tagged or untagged images older than 24 hours with zero container references and no reported active builder | None; build cache is inspection-only |
 | Chrome | Temporary signing copies; standard Cache/Code Cache folders are inspection-only | Signing copies older than 24 hours with no matching process or file users |
 
@@ -142,12 +160,12 @@ preserves the installed app and browser profiles.
 Xcode cleanup preserves SourcePackages, logs, archives, simulators and source
 projects. Only Build, Index.noindex and Index folders are eligible. Rebuilding
 and indexing can take longer after cleanup. Shared DerivedData caches are not
-included in this version. The source workspace and its parent must both be
-confirmed absent. Reclaim checks direct repositories under `~/repos` and Git's
-registered worktrees, including paths outside that folder and missing worktrees.
-Existing sources and registered worktrees are kept regardless of age. Incomplete
-inventory, recent contained files or project access, build processes, and open
-files also prevent cleanup. Ownership and usage are checked again before removal.
+included in this version. Manual cleanup permits old output in existing projects. Reclaim checks direct
+repositories under `~/repos` and Git's registered worktrees. Incomplete inventory,
+recent contained files or Xcode project access, build processes and source/output
+users prevent cleanup. The source workspace and its parent must both be confirmed
+absent only for scheduled Xcode cleanup; that policy still protects registered
+worktrees regardless of age.
 
 Docker commands explicitly target the local Unix socket at
 `~/.docker/run/docker.sock`. Remote contexts are not used. Containers and volumes
@@ -219,6 +237,27 @@ manually after disabling Reclaim's schedule; the app does not silently restart i
 
 ## Time Machine scope and permissions
 
+The Time Machine page shows whether **Manual backups** are on, highlighting
+automatic mode because it can retain hourly local snapshots on the SSD. Its switch
+is a shortcut to the **macOS Time Machine setting**, not a separate Reclaim
+schedule. **System Settings…** opens the original control under Options → Backup
+Frequency. The status is checked again when returning to Reclaim.
+
+Changes require confirmation and administrator authorization. Reclaim uses
+`tmutil disable` / `enable`, verifies the setting afterward, and never changes it
+on launch or as part of cleanup or a schedule. If the setting cannot be read,
+it remains unknown and the switch is unavailable; use System Settings instead.
+The read uses the system `AutoBackup` preference, which is not a stable public API.
+If macOS refuses a change (including a Full Disk Access restriction), the Settings
+shortcut remains available.
+
+Manual mode stops automatic backups and routine hourly local snapshots. Connect
+your backup disk and choose **Back Up Now**; connecting it alone does not start a
+backup. macOS may remove existing local restore points over the following minutes.
+Existing external backups remain, and macOS update snapshots can still exist.
+This is not a guarantee of immediate free space. Reclaim rescans and observes
+free-space changes after every setting-change outcome.
+
 All snapshot commands target `/System/Volumes/Data`, verified as internal APFS.
 External or network backups are never listed or modified. Only strict
 `com.apple.TimeMachine.<timestamp>.local` names are eligible; OS update snapshots
@@ -241,7 +280,8 @@ permission failures are recorded as skipped or incomplete work.
 ## Verification
 
 `swift test` covers strict snapshot names, local-volume scope, stale selections,
-authorization cancellation, Docker usage/tag/age policy and command scope,
+authorization cancellation, backup-mode readback/failure/concurrency safeguards,
+Docker usage/tag/age policy and command scope,
 repository/worktree ownership, stale usage checks, APFS clone and hard-link sizes,
 Chrome identity/24-hour/process/open-file checks, schedule validation, explicit legacy-job
 takeover, failure rollback, and process locking. Destructive paths use generated
